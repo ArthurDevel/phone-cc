@@ -239,8 +239,8 @@
 
 ## Feature 10: Error Handling
 
-**Status:** TODO
-**Plan file:** --
+**Status:** PLANNED
+**Plan file:** `.docs/plans/2026.03.30-feature-10-error-handling.md`
 
 ### What to build
 
