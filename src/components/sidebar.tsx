@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useSession } from "@/contexts/session-context";
+import { useToast } from "@/contexts/toast-context";
 import type { Project } from "@/types/project";
 
 export function Sidebar() {
@@ -18,6 +19,7 @@ export function Sidebar() {
     removeSession,
   } = useSession();
 
+  const { addToast } = useToast();
   const [projects, setProjects] = useState<Project[]>([]);
   const [showProjectPicker, setShowProjectPicker] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -51,12 +53,21 @@ export function Sidebar() {
           addSession(session);
           setSidebarOpen(false);
           setShowProjectPicker(false);
+        } else {
+          const data = await res.json().catch(() => ({ error: "Unknown error" }));
+          if (res.status === 409) {
+            addToast("Maximum 5 sessions reached. Close a session to start a new one.", "warning");
+          } else {
+            addToast(data.error || "Failed to create session", "error");
+          }
         }
+      } catch {
+        addToast("Network error creating session", "error");
       } finally {
         setCreating(false);
       }
     },
-    [addSession, setSidebarOpen]
+    [addSession, setSidebarOpen, addToast]
   );
 
   const handleCloseSession = useCallback(

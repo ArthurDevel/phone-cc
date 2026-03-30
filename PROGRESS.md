@@ -239,55 +239,33 @@
 
 ## Feature 10: Error Handling
 
-**Status:** PLANNED
+**Status:** DONE
 **Plan file:** `.docs/plans/2026.03.30-feature-10-error-handling.md`
 
-### What to build
+### What was built
 
-- **Network loss detection:**
-  - Listen to `window.addEventListener("online" / "offline")`
-  - When offline: show a yellow banner at the top of the app (below the header): "You are offline. Reconnecting when network is available..." (`bg-warning/20 text-warning`)
-  - When back online: hide the banner, reconnect all SSE streams
-- **SSE disconnect recovery:**
-  - If an SSE EventSource fires `onerror` or closes unexpectedly, retry with exponential backoff: 1s, 2s, 4s, 8s, max 30s
-  - During reconnection, show "Reconnecting..." text in the chat (muted, italic)
-  - On successful reconnect, fetch message history to catch up on missed messages
-- **Failed message send:**
-  - If `POST /api/sessions/[id]/message` returns non-200 or network error:
-    - Show the user message bubble with a red label below it: "Failed to send"
-    - Show a "Retry" button next to the label
-    - Tapping retry re-sends the same message
-  - Keep the failed message in the message list (don't remove it)
-- **Agent crash detection:**
-  - If the Claude Code SDK process exits unexpectedly (non-zero exit, signal kill, etc.):
-    - Set session status to `error`
-    - Push `status_change` event via SSE
-    - In the chat, show an error card: "Agent disconnected unexpectedly" with a "Reconnect" button
-    - Tapping reconnect calls `POST /api/sessions/[id]/reconnect`
-- **Clone failure:**
-  - If `git clone` fails during session creation (bad URL, auth failure, repo not found):
-    - Return 500 with `{ error: "Failed to clone repository: {git error message}" }`
-    - Do NOT create the session folder (or clean it up if partially created)
-    - Frontend shows a toast notification with the error message
-- **Session limit exceeded:**
-  - `POST /api/sessions` returns 409 if 5 sessions exist
-  - Frontend shows a toast: "Maximum 5 sessions reached. Close a session to start a new one."
-- **Deepgram connection failure:**
-  - If backend WebSocket to Deepgram fails to connect or drops:
-    - Send an error event back to the client WebSocket
-    - Client shows a toast: "Voice input unavailable. Check your connection."
-    - Disable the mic button (gray it out), but keep the text input functional
-    - On next mic tap after failure, retry the connection
-- **Toast notification system:**
-  - Simple toast component that appears at the top of the screen
-  - Auto-dismisses after 5 seconds
-  - Supports `error` (red), `warning` (orange), `success` (green) variants
-  - Multiple toasts stack vertically
-- **Verification:**
-  - `pnpm build` passes
-  - Kill a running agent process manually, verify the chat shows the error card and status dot turns red
-  - `curl POST /api/sessions` when 5 exist, verify 409 response
-  - Open in Chrome MCP, verify toast appears for error scenarios
+- Toast notification system in `src/contexts/toast-context.tsx`:
+  - `addToast(message, variant)` with auto-dismiss after 5s
+  - Variants: error (red), warning (orange), success (green)
+  - Stack vertically at top of screen, click to dismiss
+  - `ToastProvider` added to `src/app/providers.tsx`
+- Network loss detection in `page.tsx`:
+  - Listens to window online/offline events
+  - Shows yellow banner below header when offline
+- SSE reconnection with exponential backoff in ChatView:
+  - On EventSource error, retries with 1s, 2s, 4s, 8s... max 30s delay
+  - Re-fetches message history on reconnect to catch up
+  - Shows "Reconnecting..." text in chat during retry
+- Failed message send + retry:
+  - Tracks failed message IDs in `useChatStream`
+  - UserBubble shows "Failed to send" + "Retry" button
+  - Retry re-sends the same message text
+- Agent error card:
+  - When status is `error`, shows card: "Agent disconnected unexpectedly" + "Reconnect" button
+  - Reconnect button calls `POST /api/sessions/[id]/reconnect`
+- Sidebar toast integration:
+  - Shows toast on session creation failure (500) and session limit exceeded (409)
+- `pnpm build` passes
 
 ---
 

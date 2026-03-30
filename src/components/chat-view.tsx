@@ -31,11 +31,14 @@ const PR_URL_PATTERN = /https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+/;
 // EVENT HANDLERS / HOOKS
 // ============================================================================
 
+const MAX_RECONNECT_DELAY = 30_000;
+
 /**
  * Manages SSE connection and message state for a session.
+ * Includes exponential backoff reconnection on SSE errors.
  * @param sessionId - The active session ID (or null)
  * @param onStatusChange - Callback to propagate status changes to the context
- * @returns messages, status, and sendMessage function
+ * @returns messages, status, reconnecting flag, failedMessageId, sendMessage, and retrySend
  */
 function useChatStream(
   sessionId: string | null,
@@ -43,17 +46,23 @@ function useChatStream(
 ) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [status, setStatus] = useState<"idle" | "thinking" | "error">("idle");
+  const [reconnecting, setReconnecting] = useState(false);
+  const [failedMessageId, setFailedMessageId] = useState<string | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
+  const retryDelayRef = useRef(1000);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Load history and connect SSE when session changes
   useEffect(() => {
     if (!sessionId) {
       setMessages([]);
       setStatus("idle");
+      setReconnecting(false);
       return;
     }
 
     let cancelled = false;
+    retryDelayRef.current = 1000;
 
     // Fetch existing message history
     fetch(`/api/sessions/${sessionId}/history`)
@@ -65,128 +74,188 @@ function useChatStream(
         if (!cancelled) setMessages([]);
       });
 
-    // Connect to SSE stream
-    const es = new EventSource(`/api/sessions/${sessionId}/stream`);
-    eventSourceRef.current = es;
-
-    es.addEventListener("user_message", (e) => {
+    /** Connects (or reconnects) to the SSE stream */
+    function connectSse() {
       if (cancelled) return;
-      const data = JSON.parse(e.data);
-      setMessages((prev) => [...prev, data.message]);
-    });
 
-    es.addEventListener("text_delta", (e) => {
-      if (cancelled) return;
-      const data = JSON.parse(e.data);
-      setMessages((prev) => {
-        const updated = [...prev];
-        const last = updated[updated.length - 1];
-        // Append text to existing assistant message, or create a new one
-        if (last && last.role === "assistant") {
+      const es = new EventSource(`/api/sessions/${sessionId}/stream`);
+      eventSourceRef.current = es;
+
+      es.onopen = () => {
+        retryDelayRef.current = 1000;
+        if (!cancelled) setReconnecting(false);
+      };
+
+      es.onerror = () => {
+        if (cancelled) return;
+        es.close();
+        eventSourceRef.current = null;
+        setReconnecting(true);
+
+        // Re-fetch history on reconnect to catch missed messages
+        fetch(`/api/sessions/${sessionId}/history`)
+          .then((res) => (res.ok ? res.json() : null))
+          .then((data) => {
+            if (!cancelled && data?.messages) setMessages(data.messages);
+          })
+          .catch(() => {});
+
+        // Exponential backoff retry
+        const delay = retryDelayRef.current;
+        retryDelayRef.current = Math.min(delay * 2, MAX_RECONNECT_DELAY);
+        retryTimerRef.current = setTimeout(connectSse, delay);
+      };
+
+      es.addEventListener("user_message", (e) => {
+        if (cancelled) return;
+        const data = JSON.parse(e.data);
+        setMessages((prev) => [...prev, data.message]);
+      });
+
+      es.addEventListener("text_delta", (e) => {
+        if (cancelled) return;
+        const data = JSON.parse(e.data);
+        setMessages((prev) => {
+          const updated = [...prev];
+          const last = updated[updated.length - 1];
+          if (last && last.role === "assistant") {
+            updated[updated.length - 1] = {
+              ...last,
+              content: last.content + data.text,
+            };
+          } else {
+            updated.push({
+              id: crypto.randomUUID(),
+              role: "assistant",
+              content: data.text,
+              toolUses: [],
+              timestamp: Date.now(),
+            });
+          }
+          return updated;
+        });
+      });
+
+      es.addEventListener("tool_use_start", (e) => {
+        if (cancelled) return;
+        const data = JSON.parse(e.data);
+        setMessages((prev) => {
+          const updated = [...prev];
+          let last = updated[updated.length - 1];
+          if (!last || last.role !== "assistant") {
+            last = {
+              id: crypto.randomUUID(),
+              role: "assistant",
+              content: "",
+              toolUses: [],
+              timestamp: Date.now(),
+            };
+            updated.push(last);
+          }
           updated[updated.length - 1] = {
             ...last,
-            content: last.content + data.text,
+            toolUses: [
+              ...last.toolUses,
+              {
+                id: data.id,
+                toolName: data.toolName,
+                input: data.toolInput || {},
+                output: "",
+                status: "running",
+              },
+            ],
           };
-        } else {
-          updated.push({
-            id: crypto.randomUUID(),
-            role: "assistant",
-            content: data.text,
-            toolUses: [],
-            timestamp: Date.now(),
-          });
-        }
-        return updated;
+          return updated;
+        });
       });
-    });
 
-    es.addEventListener("tool_use_start", (e) => {
-      if (cancelled) return;
-      const data = JSON.parse(e.data);
-      setMessages((prev) => {
-        const updated = [...prev];
-        let last = updated[updated.length - 1];
-        if (!last || last.role !== "assistant") {
-          last = {
-            id: crypto.randomUUID(),
-            role: "assistant",
-            content: "",
-            toolUses: [],
-            timestamp: Date.now(),
-          };
-          updated.push(last);
-        }
-        updated[updated.length - 1] = {
-          ...last,
-          toolUses: [
-            ...last.toolUses,
-            {
-              id: data.id,
-              toolName: data.toolName,
-              input: data.toolInput || {},
-              output: "",
-              status: "running",
-            },
-          ],
-        };
-        return updated;
+      es.addEventListener("tool_use_result", (e) => {
+        if (cancelled) return;
+        const data = JSON.parse(e.data);
+        setMessages((prev) => {
+          const updated = [...prev];
+          const last = updated[updated.length - 1];
+          if (last && last.role === "assistant") {
+            updated[updated.length - 1] = {
+              ...last,
+              toolUses: last.toolUses.map((t) =>
+                t.id === data.id
+                  ? { ...t, output: data.output, status: data.status }
+                  : t
+              ),
+            };
+          }
+          return updated;
+        });
       });
-    });
 
-    es.addEventListener("tool_use_result", (e) => {
-      if (cancelled) return;
-      const data = JSON.parse(e.data);
-      setMessages((prev) => {
-        const updated = [...prev];
-        const last = updated[updated.length - 1];
-        if (last && last.role === "assistant") {
-          updated[updated.length - 1] = {
-            ...last,
-            toolUses: last.toolUses.map((t) =>
-              t.id === data.id
-                ? { ...t, output: data.output, status: data.status }
-                : t
-            ),
-          };
-        }
-        return updated;
+      es.addEventListener("message_end", () => {
+        if (cancelled) return;
+        setStatus("idle");
+        if (sessionId && onStatusChange) onStatusChange(sessionId, "idle");
       });
-    });
 
-    es.addEventListener("message_end", () => {
-      if (cancelled) return;
-      setStatus("idle");
-      if (sessionId && onStatusChange) onStatusChange(sessionId, "idle");
-    });
+      es.addEventListener("status_change", (e) => {
+        if (cancelled) return;
+        const data = JSON.parse(e.data);
+        setStatus(data.status);
+        if (sessionId && onStatusChange) onStatusChange(sessionId, data.status);
+      });
+    }
 
-    es.addEventListener("status_change", (e) => {
-      if (cancelled) return;
-      const data = JSON.parse(e.data);
-      setStatus(data.status);
-      if (sessionId && onStatusChange) onStatusChange(sessionId, data.status);
-    });
+    connectSse();
 
     return () => {
       cancelled = true;
-      es.close();
+      if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+      if (eventSourceRef.current) eventSourceRef.current.close();
       eventSourceRef.current = null;
     };
   }, [sessionId, onStatusChange]);
 
-  /** Sends a message to the active session */
+  /** Sends a message to the active session, tracks failures */
   const sendMessage = useCallback(
     async (text: string) => {
       if (!sessionId) return;
-      await fetch(`/api/sessions/${sessionId}/message`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
-      });
+      setFailedMessageId(null);
+      try {
+        const res = await fetch(`/api/sessions/${sessionId}/message`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
+        if (!res.ok) {
+          // Find the user message we just added and mark it failed
+          setMessages((prev) => {
+            const last = prev[prev.length - 1];
+            if (last && last.role === "user") setFailedMessageId(last.id);
+            return prev;
+          });
+        }
+      } catch {
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          if (last && last.role === "user") setFailedMessageId(last.id);
+          return prev;
+        });
+      }
     },
     [sessionId]
   );
 
-  return { messages, status, sendMessage };
+  /** Retries sending the failed message */
+  const retrySend = useCallback(
+    (messageId: string) => {
+      const msg = messages.find((m) => m.id === messageId);
+      if (msg && msg.role === "user") {
+        setFailedMessageId(null);
+        sendMessage(msg.content);
+      }
+    },
+    [messages, sendMessage]
+  );
+
+  return { messages, status, reconnecting, failedMessageId, sendMessage, retrySend };
 }
 
 /**
@@ -343,13 +412,32 @@ function useVoiceInput(
 // COMPONENTS
 // ============================================================================
 
-/** User message bubble - right-aligned with accent background */
-function UserBubble({ message }: { message: Message }) {
+/**
+ * User message bubble - right-aligned with accent background.
+ * Shows "Failed to send" + Retry button if send failed.
+ */
+function UserBubble({
+  message,
+  failed,
+  onRetry,
+}: {
+  message: Message;
+  failed?: boolean;
+  onRetry?: () => void;
+}) {
   return (
-    <div className="flex justify-end">
+    <div className="flex flex-col items-end">
       <div className="bg-accent text-white rounded-2xl rounded-br-sm max-w-[80%] px-4 py-2 text-sm">
         {message.content}
       </div>
+      {failed && (
+        <div className="flex items-center gap-2 mt-1 text-xs">
+          <span className="text-danger">Failed to send</span>
+          <button onClick={onRetry} className="text-accent hover:underline">
+            Retry
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -514,6 +602,21 @@ function ThinkingIndicator() {
   );
 }
 
+/** Error card shown when the agent crashes or disconnects */
+function ErrorCard({ onReconnect }: { onReconnect: () => void }) {
+  return (
+    <div className="bg-danger/10 border border-danger/30 rounded-lg px-4 py-3 text-sm">
+      <p className="text-danger font-medium">Agent disconnected unexpectedly</p>
+      <button
+        onClick={onReconnect}
+        className="mt-2 px-3 py-1 rounded bg-danger/20 text-danger text-xs hover:bg-danger/30"
+      >
+        Reconnect
+      </button>
+    </div>
+  );
+}
+
 /** Empty state when no messages exist */
 function EmptyState() {
   return (
@@ -593,7 +696,8 @@ function ArrowDownIcon() {
  */
 export function ChatView() {
   const { activeSessionId, setSessionStatus } = useSession();
-  const { messages, status, sendMessage } = useChatStream(activeSessionId, setSessionStatus);
+  const { messages, status, reconnecting, failedMessageId, sendMessage, retrySend } =
+    useChatStream(activeSessionId, setSessionStatus);
 
   const [inputText, setInputText] = useState("");
   const [toolModal, setToolModal] = useState<ToolUse | null>(null);
@@ -674,7 +778,12 @@ export function ChatView() {
           <>
             {messages.map((msg) =>
               msg.role === "user" ? (
-                <UserBubble key={msg.id} message={msg} />
+                <UserBubble
+                  key={msg.id}
+                  message={msg}
+                  failed={msg.id === failedMessageId}
+                  onRetry={() => retrySend(msg.id)}
+                />
               ) : (
                 <AssistantBubble
                   key={msg.id}
@@ -683,6 +792,19 @@ export function ChatView() {
                   sessionId={activeSessionId}
                 />
               )
+            )}
+            {reconnecting && (
+              <div className="text-center text-muted text-xs italic py-2">
+                Reconnecting...
+              </div>
+            )}
+            {status === "error" && (
+              <ErrorCard
+                onReconnect={async () => {
+                  if (!activeSessionId) return;
+                  await fetch(`/api/sessions/${activeSessionId}/reconnect`, { method: "POST" });
+                }}
+              />
             )}
             {status === "thinking" && <ThinkingIndicator />}
           </>

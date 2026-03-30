@@ -74,6 +74,20 @@ export default function Home() {
   const { activeSession, activeSessionId, statusMap, setSidebarOpen } = useSession();
   const pr = usePrBadge(activeSessionId);
   const sendingRef = useRef(false);
+  const [offline, setOffline] = useState(false);
+
+  // Network loss detection
+  useEffect(() => {
+    const handleOffline = () => setOffline(true);
+    const handleOnline = () => setOffline(false);
+    window.addEventListener("offline", handleOffline);
+    window.addEventListener("online", handleOnline);
+    setOffline(!navigator.onLine);
+    return () => {
+      window.removeEventListener("offline", handleOffline);
+      window.removeEventListener("online", handleOnline);
+    };
+  }, []);
 
   /** Sends a predefined message to the active session's agent */
   const sendAgentMessage = useCallback(
@@ -152,6 +166,13 @@ export default function Home() {
           <div className="w-8" />
         )}
       </header>
+
+      {/* Offline banner */}
+      {offline && (
+        <div className="px-4 py-2 bg-warning/20 text-warning text-xs text-center shrink-0">
+          You are offline. Reconnecting when network is available...
+        </div>
+      )}
 
       <ChatView />
     </div>
