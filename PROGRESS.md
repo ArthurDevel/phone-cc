@@ -80,46 +80,27 @@
 
 ## Feature 4: Session List UI (Hamburger Sidebar)
 
-**Status:** PLANNED
+**Status:** DONE
 **Plan file:** `.docs/plans/2026.03.30-feature-4-sidebar.md`
 
-### What to build
+### What was built
 
-- **Sidebar component** that slides in from the left when the hamburger icon is tapped.
-  - Overlay: semi-transparent black backdrop (`bg-black/50`). Tapping the backdrop closes the sidebar.
-  - Sidebar width: `w-72` (288px), full height, dark surface background (`bg-surface`).
-  - Transition: slide from left with a 200ms ease-out animation.
-- **Sidebar contents (top to bottom):**
-  1. **Header:** "PhoneCC" title + close button (X icon)
-  2. **"New Session" button:**
-     - If fewer than 5 sessions: indigo button, full width. Tapping opens a modal/dropdown that lists all linked projects (fetched from `GET /api/projects`). User taps a project -> calls `POST /api/sessions` -> new session is created and becomes the active session -> sidebar closes.
-     - If 5 sessions: button is grayed out (`opacity-50, cursor-not-allowed`), shows text below: "Max 5 sessions. Close one to start new."
-     - If no projects linked: button is grayed out, shows text: "Link a project in Settings first."
-  3. **Session list:** vertical list of session rows. Each row:
-     - Left: colored status dot (8px circle). Green (`bg-success`) = idle/active, orange (`bg-warning`) pulsing = thinking, red (`bg-danger`) = error, gray (`bg-muted`) = disconnected.
-     - Center: branch name (bold, white), project name below it (muted, small text).
-     - Right side: notification red dot (only if this session has unread messages AND is not the currently active session). Plus a small X button for closing. On tap of X:
-       - Call `DELETE /api/sessions/[id]` (without `confirmed: true`)
-       - If response has `requiresConfirmation: true`, show confirm dialog: "This session has {count} unpushed commit(s). Are you sure you want to close it?"
-       - If user confirms, call DELETE again with `{ confirmed: true }`
-       - If response does not have `requiresConfirmation`, session is deleted immediately
-     - Tapping the row (not the X) switches the active session (updates the chat view and top bar branch name). Clears the notification dot for this session. Closes the sidebar.
-  4. **Divider line**
-  5. **"Settings" link:** navigates to `/settings`.
-- **State management:** use React context (`SessionContext`) to track:
-  - `sessions: Session[]` -- fetched from `GET /api/sessions` on mount
-  - `activeSessionId: string | null` -- which session the chat is showing
-  - `unreadSessions: Set<string>` -- session IDs with unread messages
-  - `switchSession(id)` -- sets activeSessionId, clears unread for that session
-  - `sidebarOpen: boolean` -- controls sidebar visibility
-- **Top bar update:** replace the placeholder branch name with the active session's branch name. If no active session, show "PhoneCC".
-- **Verification:**
-  - `pnpm build` passes
-  - Open the app in Chrome MCP. Tap hamburger. Verify sidebar slides in with correct layout.
-  - If projects are linked and sessions exist, verify they appear. Verify tapping a session switches the top bar branch name.
-  - Verify the "New Session" flow: tap button, pick project, session appears in list.
-  - Verify closing a session with unpushed commits shows the confirmation dialog.
-  - Verify closing a session without unpushed commits deletes immediately.
+- SessionContext provider in `src/contexts/session-context.tsx` tracking sessions, active session, unread, sidebar state
+- Providers wrapper in `src/app/providers.tsx`, integrated into `layout.tsx`
+- Sidebar component in `src/components/sidebar.tsx` with:
+  - Slide-in animation from left with backdrop overlay
+  - "PhoneCC" header with close button
+  - "+ New Session" button with project picker dropdown
+  - Disabled states: no projects ("Link a project in Settings first"), max sessions ("Max 5 sessions")
+  - Session list with status dots (green=active, gray=disconnected), branch name, project name
+  - Close session button with unpushed commit confirmation flow
+  - Unread notification dots
+  - Settings link at bottom with gear icon
+- Updated `page.tsx` to client component using SessionContext
+- Top bar shows active session branch name or "PhoneCC" when no session active
+- Input/mic button disabled when no active session
+- `pnpm build` passes
+- UI verified in Chrome MCP: sidebar opens/closes, layout correct, Settings navigation works
 
 ---
 

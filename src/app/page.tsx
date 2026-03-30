@@ -1,29 +1,31 @@
-/**
- * PhoneCC - Main app shell
- *
- * Renders the mobile-first layout with:
- * - Top bar: hamburger menu (left) + branch name (center)
- * - Main content area: chat view (placeholder)
- * - Bottom bar: text input + mic button (placeholder)
- */
+"use client";
 
-// ============================================================================
-// MAIN LAYOUT
-// ============================================================================
+import { useSession } from "@/contexts/session-context";
+import { Sidebar } from "@/components/sidebar";
 
 export default function Home() {
+  const { activeSession, setSidebarOpen } = useSession();
+
   return (
     <div className="flex flex-col h-full">
+      {/* Sidebar */}
+      <Sidebar />
+
       {/* Top bar */}
       <header className="flex items-center h-12 px-4 border-b border-border shrink-0">
         <button
+          onClick={() => setSidebarOpen(true)}
           className="w-8 h-8 flex items-center justify-center rounded-md hover:bg-surface-hover"
           aria-label="Open menu"
         >
           <HamburgerIcon />
         </button>
-        <span className="flex-1 text-center text-sm font-medium text-muted truncate">
-          No active session
+        <span
+          className={`flex-1 text-center text-sm font-medium truncate ${
+            activeSession ? "text-foreground" : "text-muted"
+          }`}
+        >
+          {activeSession?.branchName ?? "PhoneCC"}
         </span>
         <div className="w-8" />
       </header>
@@ -31,7 +33,9 @@ export default function Home() {
       {/* Chat area */}
       <main className="flex-1 overflow-y-auto p-4">
         <div className="flex items-center justify-center h-full text-muted text-sm">
-          Start a session to begin coding
+          {activeSession
+            ? "Start a conversation"
+            : "Start a session to begin coding"}
         </div>
       </main>
 
@@ -41,12 +45,12 @@ export default function Home() {
           type="text"
           placeholder="Type a message..."
           className="flex-1 h-10 px-3 rounded-lg bg-surface border border-border text-sm text-foreground placeholder:text-muted focus:outline-none focus:border-accent"
-          disabled
+          disabled={!activeSession}
         />
         <button
-          className="w-14 h-14 rounded-full bg-accent flex items-center justify-center shrink-0 hover:bg-accent-hover transition-colors"
+          className="w-14 h-14 rounded-full bg-accent flex items-center justify-center shrink-0 hover:bg-accent-hover transition-colors disabled:opacity-50"
           aria-label="Push to talk"
-          disabled
+          disabled={!activeSession}
         >
           <MicIcon />
         </button>
@@ -54,10 +58,6 @@ export default function Home() {
     </div>
   );
 }
-
-// ============================================================================
-// ICONS
-// ============================================================================
 
 function HamburgerIcon() {
   return (
