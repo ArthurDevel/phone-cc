@@ -80,8 +80,8 @@
 
 ## Feature 4: Session List UI (Hamburger Sidebar)
 
-**Status:** TODO
-**Plan file:** --
+**Status:** PLANNED
+**Plan file:** `.docs/plans/2026.03.30-feature-4-sidebar.md`
 
 ### What to build
 
