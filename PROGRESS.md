@@ -56,8 +56,8 @@
 
 ## Feature 3: Session Backend
 
-**Status:** TODO
-**Plan file:** --
+**Status:** PLANNED
+**Plan file:** `.docs/plans/2026.03.30-feature-3-session-backend.md`
 
 ### What to build
 
