@@ -12,7 +12,7 @@
 
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useSession, type RuntimeStatus } from "@/contexts/session-context";
 import { renderMarkdown } from "@/lib/markdown";
 import { PrCard } from "@/components/pr-card";
@@ -48,18 +48,28 @@ function useChatStream(
   const [status, setStatus] = useState<"idle" | "thinking" | "error">("idle");
   const [reconnecting, setReconnecting] = useState(false);
   const [failedMessageId, setFailedMessageId] = useState<string | null>(null);
+  const [loadingHistory, setLoadingHistory] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
   const retryDelayRef = useRef(1000);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Load history and connect SSE when session changes
-  useEffect(() => {
+  // Reset state when sessionId changes (render-time, not in effect)
+  const [prevSessionId, setPrevSessionId] = useState(sessionId);
+  if (sessionId !== prevSessionId) {
+    setPrevSessionId(sessionId);
     if (!sessionId) {
       setMessages([]);
       setStatus("idle");
       setReconnecting(false);
-      return;
+      setLoadingHistory(false);
+    } else {
+      setLoadingHistory(true);
     }
+  }
+
+  // Load history and connect SSE when session changes
+  useEffect(() => {
+    if (!sessionId) return;
 
     let cancelled = false;
     retryDelayRef.current = 1000;
@@ -72,6 +82,9 @@ function useChatStream(
       })
       .catch(() => {
         if (!cancelled) setMessages([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingHistory(false);
       });
 
     /** Connects (or reconnects) to the SSE stream */
@@ -255,7 +268,7 @@ function useChatStream(
     [messages, sendMessage]
   );
 
-  return { messages, status, reconnecting, failedMessageId, sendMessage, retrySend };
+  return { messages, status, reconnecting, failedMessageId, loadingHistory, sendMessage, retrySend };
 }
 
 /**
@@ -277,6 +290,38 @@ function useVoiceInput(
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const accumulatedRef = useRef("");
+
+  /** Stops recording: closes WebSocket and MediaStream */
+  const stopRecording = useCallback(() => {
+    // Stop MediaRecorder
+    if (recorderRef.current && recorderRef.current.state !== "inactive") {
+      recorderRef.current.stop();
+    }
+    recorderRef.current = null;
+
+    // Close WebSocket
+    if (wsRef.current) {
+      if (wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.close();
+      }
+      wsRef.current = null;
+    }
+
+    // Stop all audio tracks
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach((t) => t.stop());
+      mediaStreamRef.current = null;
+    }
+
+    // Send any remaining accumulated text
+    if (accumulatedRef.current.trim()) {
+      onTranscript(accumulatedRef.current.trim());
+      accumulatedRef.current = "";
+    }
+
+    setRecording(false);
+    setInterimText("");
+  }, [onTranscript]);
 
   /** Starts recording: gets mic, opens WebSocket, streams audio */
   const startRecording = useCallback(async () => {
@@ -354,45 +399,13 @@ function useVoiceInput(
           accumulatedRef.current = "";
         }
       };
-    } catch (err) {
-      console.error("Failed to start recording:", err);
+    } catch {
       setRecording(false);
     }
-  }, [sessionId, status, onTranscript]);
-
-  /** Stops recording: closes WebSocket and MediaStream */
-  const stopRecording = useCallback(() => {
-    // Stop MediaRecorder
-    if (recorderRef.current && recorderRef.current.state !== "inactive") {
-      recorderRef.current.stop();
-    }
-    recorderRef.current = null;
-
-    // Close WebSocket
-    if (wsRef.current) {
-      if (wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.close();
-      }
-      wsRef.current = null;
-    }
-
-    // Stop all audio tracks
-    if (mediaStreamRef.current) {
-      mediaStreamRef.current.getTracks().forEach((t) => t.stop());
-      mediaStreamRef.current = null;
-    }
-
-    // Send any remaining accumulated text
-    if (accumulatedRef.current.trim()) {
-      onTranscript(accumulatedRef.current.trim());
-      accumulatedRef.current = "";
-    }
-
-    setRecording(false);
-    setInterimText("");
-  }, [onTranscript]);
+  }, [sessionId, status, onTranscript, stopRecording]);
 
   const handlePointerDown = useCallback(() => {
+    if (navigator.vibrate) navigator.vibrate(50);
     startRecording();
   }, [startRecording]);
 
@@ -426,7 +439,7 @@ function UserBubble({
   onRetry?: () => void;
 }) {
   return (
-    <div className="flex flex-col items-end">
+    <div className="flex flex-col items-end animate-message-in">
       <div className="bg-accent text-white rounded-2xl rounded-br-sm max-w-[80%] px-4 py-2 text-sm">
         {message.content}
       </div>
@@ -462,7 +475,7 @@ function AssistantBubble({
   const pr = usePrDetection(sessionId, hasPrUrl);
 
   return (
-    <div className="flex justify-start">
+    <div className="flex justify-start animate-message-in">
       <div className="bg-surface text-foreground rounded-2xl rounded-bl-sm max-w-[80%] px-4 py-2 text-sm">
         {message.content && (
           <div
@@ -491,12 +504,15 @@ function AssistantBubble({
  */
 function usePrDetection(sessionId: string | null, hasPrUrl: boolean): PullRequest | null {
   const [pr, setPr] = useState<PullRequest | null>(null);
+  const [prevKey, setPrevKey] = useState(`${sessionId}:${hasPrUrl}`);
+  const key = `${sessionId}:${hasPrUrl}`;
+  if (key !== prevKey) {
+    setPrevKey(key);
+    if (!sessionId || !hasPrUrl) setPr(null);
+  }
 
   useEffect(() => {
-    if (!sessionId || !hasPrUrl) {
-      setPr(null);
-      return;
-    }
+    if (!sessionId || !hasPrUrl) return;
 
     fetch(`/api/sessions/${sessionId}/pr`)
       .then((res) => (res.ok ? res.json() : { pr: null }))
@@ -551,7 +567,7 @@ function ToolUseModal({
   onClose: () => void;
 }) {
   return (
-    <div className="fixed inset-0 z-50 bg-background overflow-y-auto">
+    <div className="fixed inset-0 z-50 bg-background overflow-y-auto animate-modal-in">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-border">
         <h2 className="text-sm font-bold">{toolUse.toolName}</h2>
@@ -696,18 +712,46 @@ function ArrowDownIcon() {
  */
 export function ChatView() {
   const { activeSessionId, setSessionStatus } = useSession();
-  const { messages, status, reconnecting, failedMessageId, sendMessage, retrySend } =
+  const { messages, status, reconnecting, failedMessageId, loadingHistory, sendMessage, retrySend } =
     useChatStream(activeSessionId, setSessionStatus);
 
   const [inputText, setInputText] = useState("");
   const [toolModal, setToolModal] = useState<ToolUse | null>(null);
   const [showScrollButton, setShowScrollButton] = useState(false);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
 
   const { recording, interimText, handlePointerDown, handlePointerUp } =
     useVoiceInput(activeSessionId, status, sendMessage);
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const isAtBottomRef = useRef(true);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Auto-resize textarea
+  useLayoutEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = Math.min(el.scrollHeight, 96) + "px"; // max 4 lines ~96px
+  }, [inputText]);
+
+  // visualViewport API: keep input above mobile keyboard
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+
+    const handleResize = () => {
+      const offset = window.innerHeight - vv.height - vv.offsetTop;
+      setKeyboardHeight(Math.max(0, offset));
+    };
+
+    vv.addEventListener("resize", handleResize);
+    vv.addEventListener("scroll", handleResize);
+    return () => {
+      vv.removeEventListener("resize", handleResize);
+      vv.removeEventListener("scroll", handleResize);
+    };
+  }, []);
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
@@ -742,6 +786,7 @@ export function ChatView() {
     if (!text || !activeSessionId) return;
     setInputText("");
     sendMessage(text);
+    if (navigator.vibrate) navigator.vibrate(30);
   }, [inputText, activeSessionId, sendMessage]);
 
   /** Handles Enter key to send message */
@@ -772,7 +817,11 @@ export function ChatView() {
         onScroll={handleScroll}
         className="flex-1 overflow-y-auto p-4 space-y-3"
       >
-        {messages.length === 0 && status !== "thinking" ? (
+        {loadingHistory ? (
+          <div className="flex items-center justify-center h-full">
+            <SpinnerIcon />
+          </div>
+        ) : messages.length === 0 && status !== "thinking" ? (
           <EmptyState />
         ) : (
           <>
@@ -823,7 +872,10 @@ export function ChatView() {
       )}
 
       {/* Input bar */}
-      <div className="relative flex items-center gap-2 px-4 py-3 border-t border-border shrink-0">
+      <div
+        className="relative flex items-end gap-2 px-4 py-3 border-t border-border shrink-0"
+        style={keyboardHeight > 0 ? { paddingBottom: keyboardHeight + 12 } : undefined}
+      >
         {/* Live transcript preview */}
         {interimText && (
           <div className="absolute bottom-full left-0 right-0 px-4 py-2 text-sm text-muted italic bg-background/90 border-t border-border">
@@ -831,13 +883,14 @@ export function ChatView() {
           </div>
         )}
 
-        <input
-          type="text"
+        <textarea
+          ref={textareaRef}
           value={inputText}
           onChange={(e) => setInputText(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder="Type a message..."
-          className="flex-1 h-10 px-3 rounded-lg bg-surface border border-border text-sm text-foreground placeholder:text-muted focus:outline-none focus:border-accent"
+          rows={1}
+          className="flex-1 min-h-[40px] max-h-24 px-3 py-2 rounded-lg bg-surface border border-border text-sm text-foreground placeholder:text-muted focus:outline-none focus:border-accent resize-none"
         />
 
         {/* Send button (visible when text is entered) */}
@@ -856,7 +909,7 @@ export function ChatView() {
           onPointerDown={handlePointerDown}
           onPointerUp={handlePointerUp}
           onPointerLeave={recording ? handlePointerUp : undefined}
-          className={`w-14 h-14 rounded-full flex items-center justify-center shrink-0 transition-colors relative ${
+          className={`w-14 h-14 rounded-full flex items-center justify-center shrink-0 transition-transform transition-colors relative active:scale-95 ${
             recording
               ? "bg-danger"
               : "bg-accent hover:bg-accent-hover"

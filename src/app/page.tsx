@@ -34,12 +34,14 @@ const PR_PROMPT = "Create a pull request from the current branch to main. Use gh
  */
 function usePrBadge(sessionId: string | null) {
   const [pr, setPr] = useState<PullRequest | null>(null);
+  const [prevSessionId, setPrevSessionId] = useState(sessionId);
+  if (sessionId !== prevSessionId) {
+    setPrevSessionId(sessionId);
+    setPr(null);
+  }
 
   useEffect(() => {
-    if (!sessionId) {
-      setPr(null);
-      return;
-    }
+    if (!sessionId) return;
 
     let cancelled = false;
 
@@ -108,14 +110,15 @@ export default function Home() {
   );
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col md:flex-row h-full">
       <Sidebar />
 
+      <div className="flex flex-col flex-1 min-w-0">
       {/* Top bar */}
       <header className="flex items-center h-12 px-4 border-b border-border shrink-0">
         <button
           onClick={() => setSidebarOpen(true)}
-          className="w-8 h-8 flex items-center justify-center rounded-md hover:bg-surface-hover"
+          className="w-8 h-8 flex items-center justify-center rounded-md hover:bg-surface-hover md:hidden"
           aria-label="Open menu"
         >
           <HamburgerIcon />
@@ -175,6 +178,7 @@ export default function Home() {
       )}
 
       <ChatView />
+      </div>
     </div>
   );
 }

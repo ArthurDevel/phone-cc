@@ -82,7 +82,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
             <button
               key={toast.id}
               onClick={() => dismissToast(toast.id)}
-              className={`pointer-events-auto px-4 py-2 rounded-lg border text-sm font-medium shadow-lg ${VARIANT_STYLES[toast.variant]}`}
+              className={`pointer-events-auto px-4 py-2 rounded-lg border text-sm font-medium shadow-lg animate-toast-in ${VARIANT_STYLES[toast.variant]}`}
             >
               {toast.message}
             </button>

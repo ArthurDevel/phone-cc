@@ -72,7 +72,11 @@ export default function SettingsPage() {
         </h2>
 
         {loading ? (
-          <div className="text-muted text-sm text-center py-8">Loading...</div>
+          <div className="space-y-2">
+            <div className="animate-skeleton h-16 w-full" />
+            <div className="animate-skeleton h-16 w-full" />
+            <div className="animate-skeleton h-16 w-full" />
+          </div>
         ) : projects.length === 0 ? (
           <div className="text-muted text-sm text-center py-8">
             No projects linked yet. Add one below.

@@ -13,6 +13,7 @@ export function Sidebar() {
     unreadSessions,
     statusMap,
     sidebarOpen,
+    loading,
     setSidebarOpen,
     switchSession,
     addSession,
@@ -107,15 +108,15 @@ export function Sidebar() {
 
   return (
     <div
-      className={`fixed inset-0 z-50 transition-opacity duration-200 ${
+      className={`fixed inset-0 z-50 transition-opacity duration-200 md:relative md:inset-auto md:opacity-100 md:pointer-events-auto md:z-auto ${
         sidebarOpen
           ? "opacity-100 pointer-events-auto"
           : "opacity-0 pointer-events-none"
       }`}
     >
-      {/* Backdrop */}
+      {/* Backdrop (mobile only) */}
       <div
-        className="absolute inset-0 bg-black/50"
+        className="absolute inset-0 bg-black/50 md:hidden"
         onClick={() => {
           setSidebarOpen(false);
           setShowProjectPicker(false);
@@ -124,7 +125,7 @@ export function Sidebar() {
 
       {/* Panel */}
       <div
-        className={`relative w-72 h-full bg-surface flex flex-col transition-transform duration-200 ease-out ${
+        className={`relative w-72 h-full bg-surface flex flex-col transition-transform duration-200 ease-out md:translate-x-0 md:border-r md:border-border md:shrink-0 ${
           sidebarOpen ? "translate-x-0" : "-translate-x-full"
         }`}
       >
@@ -196,7 +197,13 @@ export function Sidebar() {
 
         {/* Session List */}
         <div className="flex-1 overflow-y-auto px-4 py-2">
-          {sessions.length === 0 ? (
+          {loading ? (
+            <div className="space-y-2">
+              <div className="animate-skeleton h-12 w-full" />
+              <div className="animate-skeleton h-12 w-full" />
+              <div className="animate-skeleton h-12 w-full" />
+            </div>
+          ) : sessions.length === 0 ? (
             <p className="text-xs text-muted text-center py-4">
               No active sessions
             </p>

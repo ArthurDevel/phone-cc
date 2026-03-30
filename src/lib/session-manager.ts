@@ -291,7 +291,7 @@ export async function sendMessage(sessionId: string, text: string): Promise<void
         break;
       }
     }
-  } catch (err) {
+  } catch {
     if (!abortController.signal.aborted) {
       entry.emitter.emit("sse", "status_change", { status: "error" });
     }

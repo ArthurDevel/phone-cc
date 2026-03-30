@@ -271,36 +271,37 @@
 
 ## Feature 11: Polish & Deploy
 
-**Status:** PLANNED
+**Status:** DONE
 **Plan file:** `.docs/plans/2026.03.30-feature-11-polish.md`
 
-### What to build
+### What was built
 
 - **Loading states:**
-  - Session list in sidebar: show 3 skeleton rows (pulsing gray rectangles) while `GET /api/sessions` is loading
-  - Chat messages on session switch: show a centered spinner while history is loading
-  - Settings page project list: skeleton rows while loading
-- **Animations:**
-  - Sidebar: slide in from left with `transition-transform duration-200 ease-out`
-  - Messages: subtle fade-in + slide-up when new message appears (`animate-in fade-in slide-in-from-bottom-2 duration-200`)
-  - Mic button: scale up slightly on press (`active:scale-95`), pulsing ring during recording
-  - Tool use modal: fade in + scale up from center
-  - Toast notifications: slide in from top
-- **Responsive behavior:**
-  - Mobile (< 768px): sidebar is overlay with backdrop (current behavior)
-  - Tablet/Desktop (>= 768px): sidebar is persistent on the left (always visible, no overlay). Main content shifts right. Adjust with Tailwind `md:` breakpoint.
+  - Sidebar: 3 skeleton rows (pulsing gray rectangles) while sessions are loading
+  - Chat: centered spinner while message history is loading on session switch
+  - Settings: skeleton rows while projects are loading
+- **Animations (CSS keyframes in globals.css):**
+  - `animate-message-in`: fade-in + slide-up on new message bubbles (200ms ease-out)
+  - `animate-toast-in`: slide-in from top on toast notifications (200ms ease-out)
+  - `animate-modal-in`: fade-in + scale-up on tool use modal (150ms ease-out)
+  - `animate-skeleton`: pulsing skeleton loading animation (1.5s infinite)
+  - Mic button: `active:scale-95` on press, existing pulsing ring during recording
+  - Sidebar: already had `transition-transform duration-200 ease-out`
+- **Responsive desktop layout:**
+  - Mobile (< 768px): sidebar is overlay with backdrop (unchanged)
+  - Desktop (>= 768px): sidebar is always visible with border-right, main content shifts right via flex-row layout
+  - Hamburger button hidden on desktop (`md:hidden`)
+  - Backdrop hidden on desktop (`md:hidden`)
 - **Keyboard handling:**
-  - On mobile, when the virtual keyboard opens (text input focused), the input bar should remain visible above the keyboard. Use `visualViewport` API to detect keyboard and adjust layout.
-  - `Enter` sends message, `Shift+Enter` inserts newline (make text input a textarea that auto-grows up to 4 lines)
+  - Text input converted to auto-growing textarea (max 4 lines / 96px)
+  - `Enter` sends message, `Shift+Enter` inserts newline
+  - `visualViewport` API adjusts input bar padding when mobile keyboard opens
 - **Haptic feedback:**
-  - Call `navigator.vibrate(50)` on mic button press (if `navigator.vibrate` exists)
-  - Call `navigator.vibrate(30)` on message send
+  - `navigator.vibrate(50)` on mic button press
+  - `navigator.vibrate(30)` on message send
 - **Build and lint cleanup:**
-  - `pnpm build` must pass with zero errors and zero warnings
-  - `pnpm lint` must pass
-  - Remove any unused imports, variables, or dead code
-- **Verification:**
-  - `pnpm build` passes with zero errors and zero warnings
-  - `pnpm lint` passes
-  - Open in Chrome MCP at mobile viewport (375x812). Verify layout, sidebar, chat, mic button all work.
-  - Open at desktop viewport (1440x900). Verify sidebar is persistent.
+  - Fixed React 19 lint errors: replaced setState-in-effect with render-time state resets
+  - Fixed `stopRecording` forward reference by reordering hook declarations
+  - Removed unused `err` variable in session-manager catch block
+  - `pnpm build` passes with zero errors
+  - `pnpm lint` passes with zero errors and zero warnings
