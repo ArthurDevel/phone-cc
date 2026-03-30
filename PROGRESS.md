@@ -106,8 +106,8 @@
 
 ## Feature 5: Chat Interface
 
-**Status:** TODO
-**Plan file:** --
+**Status:** PLANNED
+**Plan file:** `.docs/plans/2026.03.30-feature-5-chat-interface.md`
 
 ### What to build
 
