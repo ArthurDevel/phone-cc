@@ -30,36 +30,27 @@
 
 ## Feature 2: Settings Page
 
-**Status:** PLANNED
+**Status:** DONE
 **Plan file:** `.docs/plans/2026.03.30-feature-2-settings-page.md`
 
-### What to build
+### What was built
 
-- A settings page accessible from the hamburger menu sidebar.
-- Purpose: manage **linked GitHub projects** that can be used when creating sessions.
-- Each linked project stores:
-  - `id`: auto-generated UUID
-  - `name`: display name chosen by user (e.g. "My API")
-  - `repoUrl`: full GitHub repo URL (e.g. `https://github.com/user/repo`)
-  - `defaultBranch`: branch to clone from (e.g. `main`)
-- Storage: JSON file at `~/.phonecc/projects.json`. No database. Create `~/.phonecc/` directory if it doesn't exist.
-- **API routes:**
-  - `GET /api/projects` -- returns `{ projects: Project[] }`. If `projects.json` doesn't exist, return empty array.
-  - `POST /api/projects` -- body: `{ name, repoUrl, defaultBranch }`. Generates UUID, appends to `projects.json`, returns the new project.
-  - `DELETE /api/projects/[id]` -- removes the project by ID from `projects.json`. Returns 404 if not found.
-- **UI (page at `/settings`):**
-  - Header with back arrow (navigates to `/`) and title "Settings"
-  - Section "Linked Projects" showing a list of all linked projects
-  - Each project row: project name (bold), repo URL (muted, truncated), default branch (badge), delete button (red X icon). Tapping delete shows a confirm dialog before calling the DELETE endpoint.
-  - "Add Project" form below the list: three input fields (name, repo URL, default branch with "main" as default value) + "Add" button. On submit, calls POST endpoint and adds to the list.
+- Settings page at `/settings` for managing linked GitHub projects
+- Project type definition in `src/types/project.ts`
+- Filesystem storage helper in `src/lib/projects.ts` (reads/writes `~/.phonecc/projects.json`)
+- API routes:
+  - `GET /api/projects` -- returns `{ projects: Project[] }`
+  - `POST /api/projects` -- creates project with UUID, returns 201
+  - `DELETE /api/projects/[id]` -- removes project, returns 404 if not found
+- Settings page UI with:
+  - Header with back arrow and "Settings" title
+  - Linked Projects list with name, repo URL, branch badge, delete button
+  - Add Project form with name, repo URL, default branch fields
   - Empty state: "No projects linked yet. Add one below."
-- **Navigation:** the hamburger sidebar (not built yet, but the settings page should exist at `/settings` and be navigable directly). The sidebar will link to it in Feature 4.
-- **Verification:**
-  - `pnpm build` passes
-  - `curl POST /api/projects` with test data returns 200 and the project with an ID
-  - `curl GET /api/projects` returns the project just created
-  - `curl DELETE /api/projects/[id]` returns 200
-  - Open `/settings` in Chrome MCP, verify the form renders, add a project via the UI, verify it appears in the list
+  - Confirm dialog before deleting a project
+- `pnpm build` passes
+- All API endpoints verified with curl
+- UI verified in Chrome MCP: form renders, projects add/delete correctly, back button works
 
 ---
 
