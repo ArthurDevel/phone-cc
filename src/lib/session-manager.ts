@@ -3,10 +3,12 @@ import path from "path";
 import os from "os";
 import { execFile } from "child_process";
 import { promisify } from "util";
+import { EventEmitter } from "events";
 import { query, type Query } from "@anthropic-ai/claude-agent-sdk";
 import { readProjects } from "@/lib/projects";
 import { CITIES } from "@/lib/cities";
 import type { Session, SessionMetadata } from "@/types/session";
+import type { Message, ToolUse } from "@/types/message";
 
 const execFileAsync = promisify(execFile);
 
@@ -14,12 +16,15 @@ const SESSIONS_DIR = path.join(os.homedir(), ".phonecc", "sessions");
 const MAX_SESSIONS = 5;
 
 interface AgentEntry {
-  query: Query;
-  abortController: AbortController;
   sdkSessionId: string;
+  cwd: string;
+  emitter: EventEmitter;
+  processing: boolean;
+  messages: Message[];
+  currentQuery: Query | null;
+  currentAbort: AbortController | null;
 }
 
-// In-memory agent map — lost on server restart, recovered via reconnect
 const agents = new Map<string, AgentEntry>();
 
 async function ensureSessionsDir() {
@@ -75,7 +80,6 @@ async function generateBranchName(repoUrl: string): Promise<string> {
   const localNames = new Set(await getLocalSessionNames());
   const remoteBranches = await getRemoteBranches(repoUrl);
 
-  // Shuffle cities for randomness
   const shuffled = [...CITIES].sort(() => Math.random() - 0.5);
 
   for (const city of shuffled) {
@@ -84,7 +88,6 @@ async function generateBranchName(repoUrl: string): Promise<string> {
     }
   }
 
-  // All cities taken — append suffix
   for (const city of shuffled) {
     for (let i = 2; i <= 100; i++) {
       const name = `${city}-${i}`;
@@ -100,7 +103,6 @@ async function generateBranchName(repoUrl: string): Promise<string> {
 function buildCloneUrl(repoUrl: string): string {
   const pat = process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
   if (!pat) return repoUrl;
-  // Convert https://github.com/user/repo to https://PAT@github.com/user/repo.git
   let url = repoUrl;
   if (!url.endsWith(".git")) url += ".git";
   return url.replace("https://", `https://${pat}@`);
@@ -118,48 +120,212 @@ async function writeSdkSessionId(sessionDir: string, id: string) {
   await fs.writeFile(path.join(sessionDir, ".sdk-session-id"), id, "utf-8");
 }
 
-function spawnAgent(
-  sessionId: string,
-  cwd: string,
-  resumeSessionId?: string
-): void {
-  const abortController = new AbortController();
-  const q = query({
-    prompt: "You are a coding agent. Wait for user instructions.",
-    options: {
+function ensureAgent(sessionId: string, cwd: string, sdkSessionId?: string): AgentEntry {
+  let entry = agents.get(sessionId);
+  if (!entry) {
+    entry = {
+      sdkSessionId: sdkSessionId || "",
       cwd,
+      emitter: new EventEmitter(),
+      processing: false,
+      messages: [],
+      currentQuery: null,
+      currentAbort: null,
+    };
+    entry.emitter.setMaxListeners(20);
+    agents.set(sessionId, entry);
+  }
+  return entry;
+}
+
+export async function sendMessage(sessionId: string, text: string): Promise<void> {
+  const entry = agents.get(sessionId);
+  if (!entry) throw new Error("Session not active");
+
+  // Add user message
+  const userMsg: Message = {
+    id: crypto.randomUUID(),
+    role: "user",
+    content: text,
+    toolUses: [],
+    timestamp: Date.now(),
+  };
+  entry.messages.push(userMsg);
+  entry.emitter.emit("sse", "user_message", { message: userMsg });
+
+  entry.processing = true;
+  entry.emitter.emit("sse", "status_change", { status: "thinking" });
+
+  const abortController = new AbortController();
+  entry.currentAbort = abortController;
+
+  const q = query({
+    prompt: text,
+    options: {
+      cwd: entry.cwd,
       abortController,
       permissionMode: "bypassPermissions",
       allowDangerouslySkipPermissions: true,
-      resume: resumeSessionId,
+      resume: entry.sdkSessionId || undefined,
       includePartialMessages: true,
-      maxTurns: 1,
     },
   });
+  entry.currentQuery = q;
 
-  const entry: AgentEntry = {
-    query: q,
-    abortController,
-    sdkSessionId: resumeSessionId || "",
-  };
-  agents.set(sessionId, entry);
+  let currentAssistantMsg: Message | null = null;
 
-  // Consume the generator in background to capture session ID
-  (async () => {
-    try {
-      for await (const message of q) {
-        if (message.type === "system" && message.subtype === "init") {
-          entry.sdkSessionId = message.session_id;
-          await writeSdkSessionId(cwd, message.session_id);
+  try {
+    for await (const message of q) {
+      if (message.type === "system" && message.subtype === "init") {
+        entry.sdkSessionId = message.session_id;
+        await writeSdkSessionId(entry.cwd, message.session_id);
+        continue;
+      }
+
+      if (message.type === "stream_event") {
+        const event = message.event;
+
+        if (event.type === "content_block_start") {
+          if (!currentAssistantMsg) {
+            currentAssistantMsg = {
+              id: crypto.randomUUID(),
+              role: "assistant",
+              content: "",
+              toolUses: [],
+              timestamp: Date.now(),
+            };
+            entry.messages.push(currentAssistantMsg);
+          }
+
+          if (event.content_block.type === "tool_use") {
+            const toolUse: ToolUse = {
+              id: event.content_block.id,
+              toolName: event.content_block.name,
+              input: {},
+              output: "",
+              status: "running",
+            };
+            currentAssistantMsg.toolUses.push(toolUse);
+            entry.emitter.emit("sse", "tool_use_start", {
+              id: toolUse.id,
+              toolName: toolUse.toolName,
+              toolInput: {},
+            });
+          }
         }
-        if (message.type === "result") {
-          break;
+
+        if (event.type === "content_block_delta") {
+          if (event.delta.type === "text_delta" && currentAssistantMsg) {
+            currentAssistantMsg.content += event.delta.text;
+            entry.emitter.emit("sse", "text_delta", { text: event.delta.text });
+          }
+          if (event.delta.type === "input_json_delta" && currentAssistantMsg) {
+            // Tool input arrives as JSON deltas — we'll get the full input from the assistant message
+          }
+        }
+
+        continue;
+      }
+
+      if (message.type === "assistant" && currentAssistantMsg) {
+        // Extract complete tool inputs from the full message
+        const content = message.message.content;
+        for (const block of content) {
+          if (block.type === "tool_use") {
+            const toolUse = currentAssistantMsg.toolUses.find(
+              (t) => t.id === block.id
+            );
+            if (toolUse) {
+              toolUse.input = block.input as Record<string, unknown>;
+            }
+          }
         }
       }
-    } catch {
-      // Agent process ended
+
+      if (message.type === "user" && currentAssistantMsg) {
+        // Tool results come in user messages
+        const userContent = message.message.content;
+        if (Array.isArray(userContent)) {
+          for (const block of userContent) {
+            if (
+              typeof block === "object" &&
+              block !== null &&
+              "type" in block &&
+              block.type === "tool_result"
+            ) {
+              const resultBlock = block as {
+                type: "tool_result";
+                tool_use_id: string;
+                content?: string | Array<{ type: string; text?: string }>;
+                is_error?: boolean;
+              };
+              const toolUse = currentAssistantMsg.toolUses.find(
+                (t) => t.id === resultBlock.tool_use_id
+              );
+              if (toolUse) {
+                let output = "";
+                if (typeof resultBlock.content === "string") {
+                  output = resultBlock.content;
+                } else if (Array.isArray(resultBlock.content)) {
+                  output = resultBlock.content
+                    .map((c) => (c.type === "text" ? c.text || "" : ""))
+                    .join("");
+                }
+                toolUse.output = output;
+                toolUse.status = resultBlock.is_error ? "failed" : "completed";
+                entry.emitter.emit("sse", "tool_use_result", {
+                  id: toolUse.id,
+                  toolName: toolUse.toolName,
+                  output,
+                  status: toolUse.status,
+                });
+              }
+            }
+          }
+        }
+      }
+
+      if (message.type === "result") {
+        entry.emitter.emit("sse", "message_end", {});
+        currentAssistantMsg = null;
+        break;
+      }
     }
-  })();
+  } catch (err) {
+    if (!abortController.signal.aborted) {
+      entry.emitter.emit("sse", "status_change", { status: "error" });
+    }
+    entry.processing = false;
+    entry.currentQuery = null;
+    entry.currentAbort = null;
+    return;
+  }
+
+  entry.processing = false;
+  entry.currentQuery = null;
+  entry.currentAbort = null;
+  entry.emitter.emit("sse", "status_change", { status: "idle" });
+}
+
+export function getEventEmitter(sessionId: string): EventEmitter | null {
+  return agents.get(sessionId)?.emitter || null;
+}
+
+export function getMessageHistory(sessionId: string): Message[] | null {
+  const entry = agents.get(sessionId);
+  if (!entry) return null;
+  return entry.messages;
+}
+
+export function isProcessing(sessionId: string): boolean {
+  return agents.get(sessionId)?.processing || false;
+}
+
+export function cancelProcessing(sessionId: string): void {
+  const entry = agents.get(sessionId);
+  if (entry?.currentAbort) {
+    entry.currentAbort.abort();
+  }
 }
 
 export async function createSession(projectId: string): Promise<Session> {
@@ -183,7 +349,6 @@ export async function createSession(projectId: string): Promise<Session> {
   const cloneUrl = buildCloneUrl(project.repoUrl);
 
   try {
-    // Clone
     await execFileAsync("git", [
       "clone",
       "--branch",
@@ -192,12 +357,10 @@ export async function createSession(projectId: string): Promise<Session> {
       sessionDir,
     ]);
 
-    // Create branch
     await execFileAsync("git", ["checkout", "-b", branchName], {
       cwd: sessionDir,
     });
   } catch (err) {
-    // Clean up on failure
     await fs.rm(sessionDir, { recursive: true, force: true }).catch(() => {});
     const message =
       err instanceof Error ? err.message : "Failed to clone repository";
@@ -220,7 +383,7 @@ export async function createSession(projectId: string): Promise<Session> {
     "utf-8"
   );
 
-  spawnAgent(branchName, sessionDir);
+  ensureAgent(branchName, sessionDir);
 
   return { ...metadata, status: "active" };
 }
@@ -261,11 +424,10 @@ export async function closeSession(
   try {
     await fs.access(sessionDir);
   } catch {
-    return null; // not found
+    return null;
   }
 
   if (!confirmed) {
-    // Check for unpushed commits
     try {
       const metadata = await readSessionMetadata(sessionDir);
       const branchName = metadata?.branchName || id;
@@ -285,15 +447,14 @@ export async function closeSession(
         };
       }
     } catch {
-      // If git log fails (no remote tracking), proceed with deletion
+      // proceed with deletion
     }
   }
 
-  // Kill agent if running
   const agent = agents.get(id);
   if (agent) {
-    agent.abortController.abort();
-    agent.query.close();
+    if (agent.currentAbort) agent.currentAbort.abort();
+    if (agent.currentQuery) agent.currentQuery.close();
     agents.delete(id);
   }
 
@@ -312,13 +473,12 @@ export async function reconnectSession(id: string): Promise<Session | null> {
   const metadata = await readSessionMetadata(sessionDir);
   if (!metadata) return null;
 
-  // Already active
   if (agents.has(id)) {
     return { ...metadata, status: "active" };
   }
 
   const sdkSessionId = await readSdkSessionId(sessionDir);
-  spawnAgent(id, sessionDir, sdkSessionId);
+  ensureAgent(id, sessionDir, sdkSessionId);
 
   return { ...metadata, status: "active" };
 }

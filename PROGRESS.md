@@ -106,64 +106,34 @@
 
 ## Feature 5: Chat Interface
 
-**Status:** PLANNED
+**Status:** DONE
 **Plan file:** `.docs/plans/2026.03.30-feature-5-chat-interface.md`
 
-### What to build
+### What was built
 
-- The main content area (`<main>`) shows the chat for the currently active session.
-- **Message types and rendering:**
-  - **User messages:** right-aligned bubble, `bg-accent` background, white text, rounded corners (`rounded-2xl rounded-br-sm`), max-width 80%.
-  - **Assistant text messages:** left-aligned bubble, `bg-surface` background, foreground text, rounded corners (`rounded-2xl rounded-bl-sm`), max-width 80%. Support markdown rendering: bold, italic, inline code, code blocks (with syntax highlighting via a simple monospace style -- no heavy library needed), bullet lists, numbered lists. Use a simple markdown renderer or build one with regex replacements.
-  - **Tool use blocks:** rendered inline in the message flow as a compact row within the assistant message area. Each tool use shows:
-    - A wrench/gear icon + tool name (e.g. "Read", "Edit", "Bash") + a brief status ("completed" in green or "failed" in red)
-    - The entire row is clickable.
-    - **On click:** opens a **full-screen modal** with:
-      - Header: tool name + close button (X)
-      - "Input" section: tool's input parameters displayed as formatted JSON in a code block
-      - "Output" section: tool's result displayed as a code block (scrollable if long)
-      - The modal has `bg-background` and is scrollable
-    - Do NOT inline the tool's input/output in the chat itself. Only the collapsed row.
-  - **Thinking/loading indicator:** when the agent is processing (status = `thinking`), show three pulsing dots in an assistant-style bubble at the bottom.
-- **Streaming:** assistant messages arrive via SSE (`GET /api/sessions/[id]/stream`). Build up the message content as `text_delta` events arrive. For tool use: `tool_use_start` adds a new tool block, `tool_use_result` updates it with the output.
-- **SSE endpoint (`GET /api/sessions/[id]/stream`):**
-  - Returns `text/event-stream`
-  - Event types: `text_delta` (data: `{ text }`), `tool_use_start` (data: `{ toolName, toolInput }`), `tool_use_result` (data: `{ toolName, output }`), `message_end` (data: `{}`), `status_change` (data: `{ status }`)
-  - The endpoint keeps the connection open. New messages are pushed as the agent processes.
-- **Send endpoint (`POST /api/sessions/[id]/message`):**
-  - Body: `{ text: "user's message" }`
-  - Passes the message to the Claude Code SDK agent
-  - Returns 200 immediately (response streams via SSE)
-  - Returns 404 if session not found, 400 if no text
-- **Message history endpoint (`GET /api/sessions/[id]/history`):**
-  - Read the Claude Code SDK's persisted conversation state from the session folder.
-  - Return `{ messages: Message[] }` in the same format the frontend uses.
-  - If the agent is disconnected, still attempt to read from the SDK's state files on disk.
-  - On frontend: when switching to a session, fetch history and populate the chat. Then connect to SSE for new messages.
-- **Auto-scroll:** the chat sticks to the bottom by default. If the user manually scrolls up (by more than 100px from bottom), stop auto-scrolling. Show a floating "scroll to bottom" pill button (`fixed bottom-20 left-1/2 -translate-x-1/2`). Tapping it scrolls to bottom and re-enables auto-scroll.
-- **Empty state:** when a session has no messages, show centered: mic icon + "Start a conversation" in muted text.
-- **Message data structure:**
-  ```typescript
-  interface Message {
-    id: string;
-    role: "user" | "assistant";
-    content: string; // text content (built up during streaming)
-    toolUses: ToolUse[]; // tool calls within this message
-    timestamp: number;
-  }
-  interface ToolUse {
-    id: string;
-    toolName: string;
-    input: Record<string, unknown>;
-    output: string;
-    status: "running" | "completed" | "failed";
-  }
-  ```
-- **Verification:**
-  - `pnpm build` passes
-  - Open the app in Chrome MCP with an active session. Send a message via curl to the message endpoint. Verify the chat shows the user bubble and then streams the assistant response.
-  - Verify tool use blocks render as collapsed rows. Click one and verify the modal opens with input/output.
-  - Verify auto-scroll behavior.
+- Message types in `src/types/message.ts` (Message, ToolUse interfaces)
+- Simple markdown renderer in `src/lib/markdown.ts` (bold, italic, code blocks, inline code, lists, line breaks)
+- Session manager rewritten in `src/lib/session-manager.ts`:
+  - EventEmitter per session for SSE streaming
+  - In-memory message history per session
+  - `sendMessage()` creates per-message `query()` calls with SDK resume
+  - Parses SDK stream events (content_block_start/delta, tool results)
+  - Emits SSE events: text_delta, tool_use_start, tool_use_result, message_end, status_change, user_message
+  - `getEventEmitter()`, `getMessageHistory()`, `cancelProcessing()`, `isProcessing()`
+- API routes:
+  - `POST /api/sessions/[id]/message` -- fire-and-forget message send, returns 200 immediately
+  - `GET /api/sessions/[id]/history` -- returns in-memory message history
+  - `GET /api/sessions/[id]/stream` -- SSE endpoint with ReadableStream, subscribes to session EventEmitter, 30s heartbeat
+- ChatView component in `src/components/chat-view.tsx`:
+  - `useChatStream` hook manages SSE connection and message state per session
+  - UserBubble (right-aligned, accent bg) and AssistantBubble (left-aligned, surface bg, markdown rendered)
+  - ToolUseRow (collapsed: wrench icon + name + status badge, clickable)
+  - ToolUseModal (full-screen: input JSON + output code block)
+  - ThinkingIndicator (three pulsing dots)
+  - Auto-scroll with scroll-to-bottom pill button
+  - Text input with Enter-to-send
+- Updated `page.tsx` to render `<ChatView />` instead of placeholder
+- `pnpm build` passes
 
 ---
 

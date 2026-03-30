@@ -2,6 +2,7 @@
 
 import { useSession } from "@/contexts/session-context";
 import { Sidebar } from "@/components/sidebar";
+import { ChatView } from "@/components/chat-view";
 
 export default function Home() {
   const { activeSession, setSidebarOpen } = useSession();
@@ -30,31 +31,8 @@ export default function Home() {
         <div className="w-8" />
       </header>
 
-      {/* Chat area */}
-      <main className="flex-1 overflow-y-auto p-4">
-        <div className="flex items-center justify-center h-full text-muted text-sm">
-          {activeSession
-            ? "Start a conversation"
-            : "Start a session to begin coding"}
-        </div>
-      </main>
-
-      {/* Bottom input bar */}
-      <footer className="flex items-center gap-2 px-4 py-3 border-t border-border shrink-0">
-        <input
-          type="text"
-          placeholder="Type a message..."
-          className="flex-1 h-10 px-3 rounded-lg bg-surface border border-border text-sm text-foreground placeholder:text-muted focus:outline-none focus:border-accent"
-          disabled={!activeSession}
-        />
-        <button
-          className="w-14 h-14 rounded-full bg-accent flex items-center justify-center shrink-0 hover:bg-accent-hover transition-colors disabled:opacity-50"
-          aria-label="Push to talk"
-          disabled={!activeSession}
-        >
-          <MicIcon />
-        </button>
-      </footer>
+      {/* Chat area + input bar (managed by ChatView) */}
+      <ChatView />
     </div>
   );
 }
@@ -67,13 +45,3 @@ function HamburgerIcon() {
   );
 }
 
-function MicIcon() {
-  return (
-    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="9" y="1" width="6" height="12" rx="3" />
-      <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-      <line x1="12" y1="19" x2="12" y2="23" />
-      <line x1="8" y1="23" x2="16" y2="23" />
-    </svg>
-  );
-}
