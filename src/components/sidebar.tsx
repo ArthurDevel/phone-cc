@@ -10,6 +10,7 @@ export function Sidebar() {
     sessions,
     activeSessionId,
     unreadSessions,
+    statusMap,
     sidebarOpen,
     setSidebarOpen,
     switchSession,
@@ -203,9 +204,7 @@ export function Sidebar() {
                   {/* Status dot */}
                   <div
                     className={`w-2 h-2 rounded-full shrink-0 ${
-                      session.status === "active"
-                        ? "bg-success"
-                        : "bg-muted"
+                      getStatusDotClass(statusMap[session.id], session.status)
                     }`}
                   />
 
@@ -269,6 +268,29 @@ function XSmallIcon() {
       <path d="M3 3l6 6M9 3l-6 6" />
     </svg>
   );
+}
+
+/**
+ * Returns the CSS class for a session's status dot.
+ * @param runtimeStatus - The runtime status from statusMap (if tracked)
+ * @param sessionStatus - The session's base status (active/disconnected)
+ */
+function getStatusDotClass(
+  runtimeStatus: string | undefined,
+  sessionStatus: string
+): string {
+  if (sessionStatus === "disconnected" && !runtimeStatus) return "bg-muted";
+
+  switch (runtimeStatus) {
+    case "thinking":
+      return "bg-warning animate-pulse";
+    case "error":
+      return "bg-danger";
+    case "idle":
+      return "bg-success";
+    default:
+      return sessionStatus === "active" ? "bg-success" : "bg-muted";
+  }
 }
 
 function GearIcon() {

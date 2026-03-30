@@ -217,42 +217,23 @@
 
 ## Feature 9: Session Status Indicators
 
-**Status:** TODO
-**Plan file:** --
+**Status:** DONE
+**Plan file:** `.docs/plans/2026.03.30-feature-9-status-indicators.md`
 
-### What to build
+### What was built
 
-- Each session has a runtime status: `idle`, `thinking`, `error`, `disconnected`.
-- **Sidebar status dots (already specced in Feature 4, now implement the live updates):**
-  - Green dot (`bg-success`) = `idle` -- agent running, waiting for input
-  - Orange pulsing dot (`bg-warning animate-pulse`) = `thinking` -- agent processing a message
-  - Red dot (`bg-danger`) = `error` -- agent crashed or last message errored
-  - Gray dot (`bg-muted`) = `disconnected` -- folder exists, agent not running
-- **Chat view thinking indicator:**
-  - When active session status is `thinking`, show three pulsing dots in an assistant-bubble-styled container at the bottom of the message list
-  - Remove the dots when status changes to `idle` or `error`
-- **Top bar branch name color:**
-  - `idle`: white (default foreground)
-  - `thinking`: orange/warning
-  - `error`: red/danger
-  - `disconnected`: gray/muted
-- **Status tracking backend:**
-  - The in-memory session map tracks status per session: `Map<string, { agent, status }>`
-  - Status transitions:
-    - Session created -> `idle`
-    - Message received -> `thinking`
-    - Agent finishes response -> `idle`
-    - Agent process exits unexpectedly -> `error`
-    - Server restart (agent not in memory) -> `disconnected`
-  - Push status changes to frontend via SSE `status_change` events: `data: { status: "thinking" }`
-- **Frontend status handling:**
-  - SessionContext stores `statusBySession: Map<string, SessionStatus>`
-  - SSE events update this map
-  - All UI components (sidebar dots, chat indicator, top bar) react to status changes
-- **Verification:**
-  - `pnpm build` passes
-  - Open in Chrome MCP. Send a message to a session. Verify the status dot changes to orange while processing, then back to green when done.
-  - Verify the thinking dots appear in the chat.
+- Added `RuntimeStatus` type and `statusMap` + `setSessionStatus` to SessionContext
+- ChatView's `useChatStream` hook propagates `status_change` SSE events to context via `onStatusChange` callback
+- Sidebar status dots now reflect runtime status:
+  - Green (`bg-success`) = idle
+  - Orange pulsing (`bg-warning animate-pulse`) = thinking
+  - Red (`bg-danger`) = error
+  - Gray (`bg-muted`) = disconnected
+- Top bar branch name color changes with status:
+  - `text-foreground` = idle, `text-warning` = thinking, `text-danger` = error, `text-muted` = disconnected
+- Chat thinking indicator (three pulsing dots) already worked from Feature 5
+- Backend `status_change` SSE events already emitted from Feature 5
+- `pnpm build` passes
 
 ---
 

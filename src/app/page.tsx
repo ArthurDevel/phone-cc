@@ -71,7 +71,7 @@ function usePrBadge(sessionId: string | null) {
 // ============================================================================
 
 export default function Home() {
-  const { activeSession, activeSessionId, setSidebarOpen } = useSession();
+  const { activeSession, activeSessionId, statusMap, setSidebarOpen } = useSession();
   const pr = usePrBadge(activeSessionId);
   const sendingRef = useRef(false);
 
@@ -111,7 +111,7 @@ export default function Home() {
         <div className="flex-1 flex items-center justify-center gap-2 min-w-0">
           <span
             className={`text-sm font-medium truncate ${
-              activeSession ? "text-foreground" : "text-muted"
+              getBranchNameColor(activeSessionId ? statusMap[activeSessionId] : undefined, !!activeSession)
             }`}
           >
             {activeSession?.branchName ?? "PhoneCC"}
@@ -156,6 +156,30 @@ export default function Home() {
       <ChatView />
     </div>
   );
+}
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
+/**
+ * Returns the text color class for the branch name based on runtime status.
+ * @param runtimeStatus - The session's runtime status
+ * @param hasSession - Whether a session is active
+ */
+function getBranchNameColor(runtimeStatus: string | undefined, hasSession: boolean): string {
+  if (!hasSession) return "text-muted";
+
+  switch (runtimeStatus) {
+    case "thinking":
+      return "text-warning";
+    case "error":
+      return "text-danger";
+    case "disconnected":
+      return "text-muted";
+    default:
+      return "text-foreground";
+  }
 }
 
 // ============================================================================

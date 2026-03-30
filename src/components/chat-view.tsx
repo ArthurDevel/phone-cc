@@ -13,7 +13,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useSession } from "@/contexts/session-context";
+import { useSession, type RuntimeStatus } from "@/contexts/session-context";
 import { renderMarkdown } from "@/lib/markdown";
 import { PrCard } from "@/components/pr-card";
 import type { Message, ToolUse } from "@/types/message";
@@ -34,9 +34,13 @@ const PR_URL_PATTERN = /https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+/;
 /**
  * Manages SSE connection and message state for a session.
  * @param sessionId - The active session ID (or null)
+ * @param onStatusChange - Callback to propagate status changes to the context
  * @returns messages, status, and sendMessage function
  */
-function useChatStream(sessionId: string | null) {
+function useChatStream(
+  sessionId: string | null,
+  onStatusChange?: (id: string, status: RuntimeStatus) => void
+) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [status, setStatus] = useState<"idle" | "thinking" | "error">("idle");
   const eventSourceRef = useRef<EventSource | null>(null);
@@ -152,12 +156,14 @@ function useChatStream(sessionId: string | null) {
     es.addEventListener("message_end", () => {
       if (cancelled) return;
       setStatus("idle");
+      if (sessionId && onStatusChange) onStatusChange(sessionId, "idle");
     });
 
     es.addEventListener("status_change", (e) => {
       if (cancelled) return;
       const data = JSON.parse(e.data);
       setStatus(data.status);
+      if (sessionId && onStatusChange) onStatusChange(sessionId, data.status);
     });
 
     return () => {
@@ -165,7 +171,7 @@ function useChatStream(sessionId: string | null) {
       es.close();
       eventSourceRef.current = null;
     };
-  }, [sessionId]);
+  }, [sessionId, onStatusChange]);
 
   /** Sends a message to the active session */
   const sendMessage = useCallback(
@@ -586,8 +592,8 @@ function ArrowDownIcon() {
  * Renders the message list, handles SSE streaming, and provides message input.
  */
 export function ChatView() {
-  const { activeSessionId } = useSession();
-  const { messages, status, sendMessage } = useChatStream(activeSessionId);
+  const { activeSessionId, setSessionStatus } = useSession();
+  const { messages, status, sendMessage } = useChatStream(activeSessionId, setSessionStatus);
 
   const [inputText, setInputText] = useState("");
   const [toolModal, setToolModal] = useState<ToolUse | null>(null);

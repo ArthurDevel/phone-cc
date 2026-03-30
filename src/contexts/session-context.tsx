@@ -30,11 +30,14 @@ const STORAGE_KEY = "phonecc:lastActiveSessionId";
 // TYPES
 // ============================================================================
 
+export type RuntimeStatus = "idle" | "thinking" | "error" | "disconnected";
+
 interface SessionContextValue {
   sessions: Session[];
   activeSessionId: string | null;
   activeSession: Session | undefined;
   unreadSessions: Set<string>;
+  statusMap: Record<string, RuntimeStatus>;
   sidebarOpen: boolean;
   loading: boolean;
   setSidebarOpen: (open: boolean) => void;
@@ -42,6 +45,7 @@ interface SessionContextValue {
   addSession: (session: Session) => void;
   removeSession: (id: string) => void;
   refreshSessions: () => Promise<Session[]>;
+  setSessionStatus: (id: string, status: RuntimeStatus) => void;
 }
 
 const SessionContext = createContext<SessionContextValue | null>(null);
@@ -54,6 +58,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [unreadSessions, setUnreadSessions] = useState<Set<string>>(new Set());
+  const [statusMap, setStatusMap] = useState<Record<string, RuntimeStatus>>({});
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [loading, setLoading] = useState(true);
 
@@ -176,12 +181,22 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     [activeSessionId]
   );
 
+  /**
+   * Updates the runtime status for a specific session.
+   * @param id - Session ID
+   * @param status - New runtime status
+   */
+  const setSessionStatus = useCallback((id: string, status: RuntimeStatus) => {
+    setStatusMap((prev) => ({ ...prev, [id]: status }));
+  }, []);
+
   const value = useMemo<SessionContextValue>(
     () => ({
       sessions,
       activeSessionId,
       activeSession,
       unreadSessions,
+      statusMap,
       sidebarOpen,
       loading,
       setSidebarOpen,
@@ -189,18 +204,21 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       addSession,
       removeSession,
       refreshSessions,
+      setSessionStatus,
     }),
     [
       sessions,
       activeSessionId,
       activeSession,
       unreadSessions,
+      statusMap,
       sidebarOpen,
       loading,
       switchSession,
       addSession,
       removeSession,
       refreshSessions,
+      setSessionStatus,
     ]
   );
 
