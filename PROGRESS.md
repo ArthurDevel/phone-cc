@@ -168,8 +168,8 @@
 
 ## Feature 7: Git Action Buttons & PR Detection
 
-**Status:** TODO
-**Plan file:** --
+**Status:** PLANNED
+**Plan file:** `.docs/plans/2026.03.30-feature-7-git-actions-pr.md`
 
 ### What to build
 
