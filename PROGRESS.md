@@ -30,8 +30,8 @@
 
 ## Feature 2: Settings Page
 
-**Status:** TODO
-**Plan file:** --
+**Status:** PLANNED
+**Plan file:** `.docs/plans/2026.03.30-feature-2-settings-page.md`
 
 ### What to build
 
