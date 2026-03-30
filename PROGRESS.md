@@ -197,8 +197,8 @@
 
 ## Feature 8: Session Persistence & Reconnection
 
-**Status:** TODO
-**Plan file:** --
+**Status:** PLANNED
+**Plan file:** `.docs/plans/2026.03.30-feature-8-session-persistence.md`
 
 ### What to build
 
