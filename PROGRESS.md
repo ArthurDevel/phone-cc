@@ -137,55 +137,32 @@
 
 ---
 
-## Feature 6: Voice Input (Deepgram Flux)
+## Feature 6: Voice Input (Deepgram)
 
-**Status:** PLANNED
+**Status:** DONE
 **Plan file:** `.docs/plans/2026.03.30-feature-6-voice-input.md`
 
-### What to build
+### What was built
 
-- **Backend WebSocket proxy for Deepgram:**
-  - Create a WebSocket endpoint at `/api/deepgram/ws` (or use a custom server WebSocket handler).
-  - When a client connects: open a WebSocket to Deepgram (`wss://api.deepgram.com/v1/listen?model=nova-2&language=en&endpointing=1500&interim_results=true&punctuate=true`) using the `DEEPGRAM_API_KEY` from env. Check Deepgram docs for the Flux model endpoint -- it may be `model=flux` or a different URL.
-  - Relay: client audio chunks -> Deepgram. Deepgram transcription events -> client.
-  - When client disconnects: close the Deepgram WebSocket.
-  - This way the Deepgram API key never leaves the backend.
-- **Install `@deepgram/sdk`** as a dependency (or use raw WebSocket to Deepgram -- whichever is simpler for the proxy approach).
-- **Floating mic button (already in the layout, now make it functional):**
-  - Positioned to the right of the text input in the bottom bar.
-  - **Idle state:** mic icon, indigo background.
-  - **Recording state:** mic icon, red background, pulsing ring animation (CSS `animate-ping` on a pseudo-element or wrapper).
-  - **Push-to-talk behavior:**
-    - `onPointerDown` (not onClick -- works for both touch and mouse): start recording.
-    - `onPointerUp` / `onPointerLeave`: stop recording and send.
-    - When recording starts:
-      1. Request microphone permission via `navigator.mediaDevices.getUserMedia({ audio: true })`
-      2. Open a WebSocket to our backend at `/api/deepgram/ws`
-      3. Stream audio chunks from the MediaStream to the backend WebSocket
-      4. Receive transcription events from the backend. Display interim results as a live preview above the input bar (light text, italic).
-      5. On final result (`is_final: true` or `speech_final: true` from endpointing): capture the transcript.
-    - When recording stops (pointer up):
-      1. Close the WebSocket to our backend
-      2. Stop the MediaStream
-      3. Take the accumulated final transcript and send it as a message to the active session (`POST /api/sessions/[id]/message`)
-      4. Clear the live preview
-    - Deepgram endpointing (1.5s silence) can also trigger a send while still holding. In that case: send the accumulated transcript, clear the preview, but keep recording for the next utterance. This allows natural pauses.
-- **Text input (already in the layout, now make it functional):**
-  - The text field to the left of the mic button.
-  - On Enter key or tapping a send arrow button: send the text as a message, clear the field.
-  - Disabled when no active session.
-- **Cancel behavior:**
-  - If the user taps the mic button while the agent is currently streaming a response (status = `thinking`):
-    1. First, call `POST /api/sessions/[id]/cancel` to abort the agent's current turn
-    2. Then start recording as normal
-  - This lets the user interrupt the agent mid-response.
-- **Cancel endpoint (`POST /api/sessions/[id]/cancel`):**
-  - Aborts the agent's current processing (SDK abort mechanism)
-  - Returns 200
-- **Verification:**
-  - `pnpm build` passes
-  - Open the app in Chrome MCP. Verify mic button is visible and renders correctly. Verify the text input sends messages on Enter.
-  - `curl POST /api/sessions/[id]/cancel` returns 200
+- Standalone WebSocket proxy server in `src/server/deepgram-ws.ts`:
+  - Runs on port 3001 (configurable via `DEEPGRAM_WS_PORT`)
+  - Accepts WebSocket connections at `/deepgram`
+  - Proxies audio to Deepgram `wss://api.deepgram.com/v1/listen` (nova-2, endpointing=1500, interim_results)
+  - Relays transcription events back to client as `{ type, text, is_final, speech_final }`
+  - Keeps `DEEPGRAM_API_KEY` server-side
+- Cancel endpoint `POST /api/sessions/[id]/cancel` -- aborts agent's current processing
+- Updated ChatView with push-to-talk mic button:
+  - `useVoiceInput` hook manages WebSocket, MediaRecorder, and transcript accumulation
+  - `onPointerDown` starts recording (cancels agent if thinking first)
+  - `onPointerUp` / `onPointerLeave` stops recording and sends accumulated transcript
+  - Interim transcript displayed as live preview above input bar
+  - Deepgram endpointing (1.5s silence) auto-sends while still holding
+  - Mic button: idle=indigo, recording=red with pulsing ring animation
+  - Send button only visible when text is entered; mic always visible
+- Added `ws`, `dotenv` dependencies; `@types/ws`, `concurrently` devDependencies
+- Added package.json scripts: `dev:ws` (starts WS server), `dev:all` (runs both)
+- `pnpm build` passes
+- WebSocket server starts correctly with `tsx`
 
 ---
 

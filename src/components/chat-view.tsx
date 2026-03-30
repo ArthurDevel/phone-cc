@@ -22,6 +22,7 @@ import type { Message, ToolUse } from "@/types/message";
 // ============================================================================
 
 const AUTO_SCROLL_THRESHOLD = 100;
+const DEEPGRAM_WS_URL = "ws://localhost:3001/deepgram";
 
 // ============================================================================
 // EVENT HANDLERS / HOOKS
@@ -177,6 +178,156 @@ function useChatStream(sessionId: string | null) {
   );
 
   return { messages, status, sendMessage };
+}
+
+/**
+ * Manages push-to-talk voice input via Deepgram WebSocket proxy.
+ * @param sessionId - The active session ID (or null)
+ * @param status - Current agent status (idle/thinking/error)
+ * @param onTranscript - Callback when a final transcript is ready to send
+ * @returns recording state, interim text, and pointer event handlers
+ */
+function useVoiceInput(
+  sessionId: string | null,
+  status: "idle" | "thinking" | "error",
+  onTranscript: (text: string) => void
+) {
+  const [recording, setRecording] = useState(false);
+  const [interimText, setInterimText] = useState("");
+
+  const wsRef = useRef<WebSocket | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const accumulatedRef = useRef("");
+
+  /** Starts recording: gets mic, opens WebSocket, streams audio */
+  const startRecording = useCallback(async () => {
+    if (!sessionId) return;
+
+    // If agent is thinking, cancel it first
+    if (status === "thinking") {
+      await fetch(`/api/sessions/${sessionId}/cancel`, { method: "POST" });
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaStreamRef.current = stream;
+
+      const ws = new WebSocket(DEEPGRAM_WS_URL);
+      wsRef.current = ws;
+      accumulatedRef.current = "";
+      setInterimText("");
+      setRecording(true);
+
+      ws.onopen = () => {
+        // Start MediaRecorder to capture audio chunks
+        const recorder = new MediaRecorder(stream, {
+          mimeType: "audio/webm;codecs=opus",
+        });
+        recorderRef.current = recorder;
+
+        recorder.ondataavailable = (e) => {
+          if (e.data.size > 0 && ws.readyState === WebSocket.OPEN) {
+            ws.send(e.data);
+          }
+        };
+
+        // Send chunks every 250ms
+        recorder.start(250);
+      };
+
+      ws.onmessage = (e) => {
+        try {
+          const data = JSON.parse(e.data);
+
+          if (data.type === "transcript") {
+            if (data.is_final && data.text) {
+              // Accumulate final transcript segments
+              accumulatedRef.current += (accumulatedRef.current ? " " : "") + data.text;
+              setInterimText(accumulatedRef.current);
+
+              // If speech_final (endpointing), send and reset
+              if (data.speech_final && accumulatedRef.current.trim()) {
+                onTranscript(accumulatedRef.current.trim());
+                accumulatedRef.current = "";
+                setInterimText("");
+              }
+            } else if (!data.is_final && data.text) {
+              // Show interim (accumulated + current interim)
+              const preview = accumulatedRef.current
+                ? accumulatedRef.current + " " + data.text
+                : data.text;
+              setInterimText(preview);
+            }
+          }
+        } catch {
+          // Ignore parse errors
+        }
+      };
+
+      ws.onerror = () => {
+        stopRecording();
+      };
+
+      ws.onclose = () => {
+        // If we have accumulated text, send it
+        if (accumulatedRef.current.trim()) {
+          onTranscript(accumulatedRef.current.trim());
+          accumulatedRef.current = "";
+        }
+      };
+    } catch (err) {
+      console.error("Failed to start recording:", err);
+      setRecording(false);
+    }
+  }, [sessionId, status, onTranscript]);
+
+  /** Stops recording: closes WebSocket and MediaStream */
+  const stopRecording = useCallback(() => {
+    // Stop MediaRecorder
+    if (recorderRef.current && recorderRef.current.state !== "inactive") {
+      recorderRef.current.stop();
+    }
+    recorderRef.current = null;
+
+    // Close WebSocket
+    if (wsRef.current) {
+      if (wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.close();
+      }
+      wsRef.current = null;
+    }
+
+    // Stop all audio tracks
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach((t) => t.stop());
+      mediaStreamRef.current = null;
+    }
+
+    // Send any remaining accumulated text
+    if (accumulatedRef.current.trim()) {
+      onTranscript(accumulatedRef.current.trim());
+      accumulatedRef.current = "";
+    }
+
+    setRecording(false);
+    setInterimText("");
+  }, [onTranscript]);
+
+  const handlePointerDown = useCallback(() => {
+    startRecording();
+  }, [startRecording]);
+
+  const handlePointerUp = useCallback(() => {
+    stopRecording();
+  }, [stopRecording]);
+
+  return {
+    recording,
+    interimText,
+    handlePointerDown,
+    handlePointerUp,
+  };
 }
 
 // ============================================================================
@@ -373,6 +524,17 @@ function MicIconLarge() {
   );
 }
 
+function MicIcon() {
+  return (
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="9" y="1" width="6" height="12" rx="3" />
+      <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+      <line x1="12" y1="19" x2="12" y2="23" />
+      <line x1="8" y1="23" x2="16" y2="23" />
+    </svg>
+  );
+}
+
 function ArrowDownIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
@@ -396,6 +558,9 @@ export function ChatView() {
   const [inputText, setInputText] = useState("");
   const [toolModal, setToolModal] = useState<ToolUse | null>(null);
   const [showScrollButton, setShowScrollButton] = useState(false);
+
+  const { recording, interimText, handlePointerDown, handlePointerUp } =
+    useVoiceInput(activeSessionId, status, sendMessage);
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const isAtBottomRef = useRef(true);
@@ -495,7 +660,14 @@ export function ChatView() {
       )}
 
       {/* Input bar */}
-      <div className="flex items-center gap-2 px-4 py-3 border-t border-border shrink-0">
+      <div className="relative flex items-center gap-2 px-4 py-3 border-t border-border shrink-0">
+        {/* Live transcript preview */}
+        {interimText && (
+          <div className="absolute bottom-full left-0 right-0 px-4 py-2 text-sm text-muted italic bg-background/90 border-t border-border">
+            {interimText}
+          </div>
+        )}
+
         <input
           type="text"
           value={inputText}
@@ -504,13 +676,35 @@ export function ChatView() {
           placeholder="Type a message..."
           className="flex-1 h-10 px-3 rounded-lg bg-surface border border-border text-sm text-foreground placeholder:text-muted focus:outline-none focus:border-accent"
         />
+
+        {/* Send button (visible when text is entered) */}
+        {inputText.trim() ? (
+          <button
+            onClick={handleSend}
+            className="w-10 h-10 rounded-full bg-accent flex items-center justify-center shrink-0 hover:bg-accent-hover transition-colors"
+            aria-label="Send message"
+          >
+            <SendIcon />
+          </button>
+        ) : null}
+
+        {/* Mic button (push-to-talk) */}
         <button
-          onClick={handleSend}
-          disabled={!inputText.trim()}
-          className="w-10 h-10 rounded-full bg-accent flex items-center justify-center shrink-0 hover:bg-accent-hover transition-colors disabled:opacity-50"
-          aria-label="Send message"
+          onPointerDown={handlePointerDown}
+          onPointerUp={handlePointerUp}
+          onPointerLeave={recording ? handlePointerUp : undefined}
+          className={`w-14 h-14 rounded-full flex items-center justify-center shrink-0 transition-colors relative ${
+            recording
+              ? "bg-danger"
+              : "bg-accent hover:bg-accent-hover"
+          }`}
+          aria-label="Push to talk"
         >
-          <SendIcon />
+          {/* Pulsing ring animation when recording */}
+          {recording && (
+            <span className="absolute inset-0 rounded-full bg-danger animate-ping opacity-30" />
+          )}
+          <MicIcon />
         </button>
       </div>
 
