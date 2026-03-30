@@ -271,8 +271,8 @@
 
 ## Feature 11: Polish & Deploy
 
-**Status:** TODO
-**Plan file:** --
+**Status:** PLANNED
+**Plan file:** `.docs/plans/2026.03.30-feature-11-polish.md`
 
 ### What to build
 
