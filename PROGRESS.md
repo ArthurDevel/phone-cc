@@ -197,29 +197,21 @@
 
 ## Feature 8: Session Persistence & Reconnection
 
-**Status:** PLANNED
+**Status:** DONE
 **Plan file:** `.docs/plans/2026.03.30-feature-8-session-persistence.md`
 
-### What to build
+### What was built
 
-- **On server start (Next.js server initialization):**
-  - Scan `~/.phonecc/sessions/` for directories that contain `session.json`
-  - Add each to the known sessions list with status `disconnected`
-  - Do NOT auto-spawn agents. They will be spawned on demand when the user opens the session.
-- **On frontend load:**
-  - Call `GET /api/sessions` to populate the session list in SessionContext
-  - Read `localStorage` key `phonecc:lastActiveSessionId`. If it matches an existing session, switch to that session.
-  - Save `phonecc:lastActiveSessionId` to `localStorage` whenever the active session changes.
-- **On session switch to a disconnected session:**
-  - Automatically call `POST /api/sessions/[id]/reconnect` to re-spawn the agent
-  - **The agent MUST resume with full conversation history** from the previous session. Use the Claude Code SDK's `resume` or `sessionId` feature to restore the conversation. The user must be able to close their browser, come back tomorrow, and continue from where they left off.
-  - Then connect to the SSE stream for that session
-  - Show a brief "Reconnecting..." message in the chat while this happens
-- **Robustness:** if a session folder is manually deleted from disk, `GET /api/sessions` should just not include it. No errors. If `session.json` is missing or corrupt inside a folder, skip that folder.
-- **Verification:**
-  - `pnpm build` passes
-  - Create a session via curl. Restart the dev server. `curl GET /api/sessions` still returns the session (with status `disconnected`). `curl POST /api/sessions/[id]/reconnect` returns status `active`.
-  - Open in Chrome MCP, verify that on page reload the last active session is auto-selected.
+- Updated `src/contexts/session-context.tsx`:
+  - `switchSession()` auto-reconnects disconnected sessions via `POST /api/sessions/[id]/reconnect`
+  - `reconnectAndSwitch()` helper handles reconnect + status update + session switch
+  - Persists `activeSessionId` to `localStorage` key `phonecc:lastActiveSessionId`
+  - On mount, reads localStorage and restores last active session (auto-reconnects if disconnected)
+- Backend already handled persistence correctly:
+  - `listSessions()` scans `~/.phonecc/sessions/` directories, skips missing/corrupt `session.json`
+  - `reconnectSession()` reads stored SDK session ID for conversation resume
+  - Sessions survive server restarts as `disconnected`, reconnect on demand
+- `pnpm build` passes
 
 ---
 
