@@ -15,7 +15,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSession } from "@/contexts/session-context";
 import { renderMarkdown } from "@/lib/markdown";
+import { PrCard } from "@/components/pr-card";
 import type { Message, ToolUse } from "@/types/message";
+import type { PullRequest } from "@/types/pr";
 
 // ============================================================================
 // CONSTANTS
@@ -23,6 +25,7 @@ import type { Message, ToolUse } from "@/types/message";
 
 const AUTO_SCROLL_THRESHOLD = 100;
 const DEEPGRAM_WS_URL = "ws://localhost:3001/deepgram";
+const PR_URL_PATTERN = /https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+/;
 
 // ============================================================================
 // EVENT HANDLERS / HOOKS
@@ -347,17 +350,23 @@ function UserBubble({ message }: { message: Message }) {
 
 /**
  * Assistant message bubble - left-aligned with surface background.
- * Renders markdown content and tool use rows.
+ * Renders markdown content, tool use rows, and detected PR cards.
  * @param message - The assistant message to render
  * @param onToolClick - Callback when a tool use row is clicked
+ * @param sessionId - Active session ID for PR fetching
  */
 function AssistantBubble({
   message,
   onToolClick,
+  sessionId,
 }: {
   message: Message;
   onToolClick: (toolUse: ToolUse) => void;
+  sessionId: string | null;
 }) {
+  const hasPrUrl = PR_URL_PATTERN.test(message.content);
+  const pr = usePrDetection(sessionId, hasPrUrl);
+
   return (
     <div className="flex justify-start">
       <div className="bg-surface text-foreground rounded-2xl rounded-bl-sm max-w-[80%] px-4 py-2 text-sm">
@@ -374,9 +383,34 @@ function AssistantBubble({
             onClick={() => onToolClick(toolUse)}
           />
         ))}
+        {pr && <PrCard pr={pr} />}
       </div>
     </div>
   );
+}
+
+/**
+ * Fetches PR info when a PR URL is detected in a message.
+ * @param sessionId - Session ID to query
+ * @param hasPrUrl - Whether the message content contains a PR URL
+ * @returns PullRequest or null
+ */
+function usePrDetection(sessionId: string | null, hasPrUrl: boolean): PullRequest | null {
+  const [pr, setPr] = useState<PullRequest | null>(null);
+
+  useEffect(() => {
+    if (!sessionId || !hasPrUrl) {
+      setPr(null);
+      return;
+    }
+
+    fetch(`/api/sessions/${sessionId}/pr`)
+      .then((res) => (res.ok ? res.json() : { pr: null }))
+      .then((data) => setPr(data.pr || null))
+      .catch(() => setPr(null));
+  }, [sessionId, hasPrUrl]);
+
+  return pr;
 }
 
 /**
@@ -640,6 +674,7 @@ export function ChatView() {
                   key={msg.id}
                   message={msg}
                   onToolClick={setToolModal}
+                  sessionId={activeSessionId}
                 />
               )
             )}

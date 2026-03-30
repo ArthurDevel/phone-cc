@@ -168,50 +168,30 @@
 
 ## Feature 7: Git Action Buttons & PR Detection
 
-**Status:** PLANNED
+**Status:** DONE
 **Plan file:** `.docs/plans/2026.03.30-feature-7-git-actions-pr.md`
 
-### What to build
+### What was built
 
-- **Git action buttons in the top bar (right side):**
-  - Two small icon buttons visible only when a session is active:
-    - **"Push" button** (upload/arrow-up icon): on tap, sends this exact message to the agent: `"Push all committed changes to the remote repository on the current branch. Use git push."`
-    - **"PR" button** (git-merge icon): on tap, sends this exact message to the agent: `"Create a pull request from the current branch to main. Use gh pr create with a descriptive title and body based on the changes made."`
-  - These are just regular messages -- they appear as user bubbles in the chat and the agent responds normally.
-- **PR detection and display:**
-  - After any assistant message finishes, scan the message content for a GitHub PR URL pattern: `https://github.com/[^/]+/[^/]+/pull/\d+`
-  - If found, call `GET /api/sessions/[id]/pr` to fetch PR details (the backend knows the repo URL from the session metadata)
-  - Display a PR card below the message: shows PR title, #number, status badge (green "Open", purple "Merged", red "Closed"), and a "View on GitHub" link that opens in a new tab
-- **API route `GET /api/sessions/[id]/pr`:**
-  - Reads the session's `session.json` to get the `repoUrl` and `branchName`
-  - Parses the repo URL to extract owner and repo name
-  - Calls GitHub REST API: `GET /repos/{owner}/{repo}/pulls?head={owner}:{branchName}&state=all` with the PAT as Bearer token
-  - Returns the most recent PR for that branch: `{ number, title, state, url, createdAt, headBranch, baseBranch }`
-  - Returns `{ pr: null }` if no PR exists for the branch
-  - Returns 404 if session not found, 502 if GitHub API fails
-- **PR card component (`PrCard`):**
-  - Used in chat (when a PR URL is detected in agent output) and in the session header
-  - Shows: PR title (bold), `#{number}` (muted), status badge:
-    - "Open" = green badge (`bg-success/20 text-success`)
-    - "Merged" = purple badge (`bg-purple-500/20 text-purple-400`)
-    - "Closed" = red badge (`bg-danger/20 text-danger`)
-  - "View on GitHub" link (opens in new tab)
-  - Compact design, fits within a chat bubble or header area
-- **Session header PR badge:**
-  - When a session is active, check on session switch + every 60s if the branch has a PR via `GET /api/sessions/[id]/pr`
-  - If yes, show a small badge next to the branch name in the top bar: `PR #42` in a green pill. Tapping it opens the PR in a new tab.
-- **Notification for background sessions:**
-  - When an SSE event arrives for a session that is NOT the currently active session, add that session's ID to the `unreadSessions` set in the SessionContext. This triggers the red notification dot in the sidebar.
-- **Session status updates:**
-  - When a message is sent: set session status to `thinking`
-  - When `message_end` received: set status to `idle`
-  - When an error occurs: set status to `error`
-  - Push status changes via SSE `status_change` events
-- **Verification:**
-  - `pnpm build` passes
-  - Open the app in Chrome MCP with an active session. Verify Push and PR buttons appear in the top bar.
-  - Tap the Push button, verify the prompt appears in chat as a user bubble.
-  - `curl GET /api/sessions/[id]/pr` returns PR data or `{ pr: null }`
+- PullRequest type in `src/types/pr.ts`
+- PR API endpoint `GET /api/sessions/[id]/pr`:
+  - Reads session metadata, parses GitHub URL to extract owner/repo
+  - Queries GitHub REST API for PRs on the session's branch
+  - Returns `{ pr: PullRequest }` or `{ pr: null }`
+  - Handles merged state detection via `merged_at` field
+- PrCard component in `src/components/pr-card.tsx`:
+  - Compact card with title, #number, status badge (Open/Merged/Closed), GitHub link
+  - Color-coded badges: green=Open, purple=Merged, red=Closed
+- Updated `page.tsx`:
+  - Push button (arrow-up icon) sends predefined git push message to agent
+  - PR button (git-merge icon) sends predefined PR creation message to agent
+  - Both only visible when a session is active
+  - PR badge in header: polls `GET /api/sessions/[id]/pr` every 60s, shows `PR #N` green pill linking to GitHub
+  - `usePrBadge` hook manages polling lifecycle
+- Updated `chat-view.tsx`:
+  - `usePrDetection` hook fetches PR info when a GitHub PR URL is detected in message content
+  - AssistantBubble renders PrCard inline when PR URL pattern matches
+- `pnpm build` passes
 
 ---
 
