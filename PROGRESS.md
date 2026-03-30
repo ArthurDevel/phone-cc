@@ -56,53 +56,25 @@
 
 ## Feature 3: Session Backend
 
-**Status:** PLANNED
+**Status:** DONE
 **Plan file:** `.docs/plans/2026.03.30-feature-3-session-backend.md`
 
-### What to build
+### What was built
 
-- Server-side session management. A session = a folder on disk at `~/.phonecc/sessions/{branchName}/` containing a cloned repo + a running Claude Code SDK agent process.
-- **Session metadata** is stored at `~/.phonecc/sessions/{branchName}/session.json`:
-  ```json
-  { "id": "tokyo", "branchName": "tokyo", "projectName": "My API", "repoUrl": "https://github.com/user/repo", "createdAt": "2026-03-30T10:00:00Z" }
-  ```
-- **Creating a session (`POST /api/sessions`):**
-  - Request body: `{ projectId }` -- references a linked project from `projects.json`
-  - Steps:
-    1. Look up the project by ID from `~/.phonecc/projects.json`. Return 404 if not found.
-    2. Check session count: list directories in `~/.phonecc/sessions/`. If >= 5, return 409 with `{ error: "Maximum 5 sessions reached. Close a session to start a new one." }`.
-    3. Generate branch name: pick a random city from a hardcoded list of ~50 cities (lowercase, kebab-case where needed: `tokyo`, `buenos-aires`, `new-york`, `cape-town`, etc.). Use `git ls-remote --heads {repoUrl}` to check if that branch exists on the remote. Also check local session folders. If duplicate, append `-2`, `-3`, etc. until unique.
-    4. Clone: `git clone --branch {defaultBranch} {repoUrl} ~/.phonecc/sessions/{branchName}/`. Use the GitHub PAT for auth by embedding it in the URL: `https://{PAT}@github.com/user/repo.git`.
-    5. In the cloned folder: `git checkout -b {branchName}`.
-    6. Write `~/.phonecc/sessions/{branchName}/session.json` with metadata.
-    7. Spawn a Claude Code SDK agent using `@anthropic-ai/claude-code` with `cwd` set to the cloned folder. Store the agent reference in an in-memory `Map<string, AgentProcess>`. **Important:** configure the SDK to persist conversation history to disk in the session folder (check SDK docs for `resume` or `sessionId` options) so the conversation survives server restarts.
-    8. Return the session metadata + status `active`.
-  - Response: `{ id, branchName, projectName, repoUrl, createdAt, status: "active" }`
-- **Listing sessions (`GET /api/sessions`):**
-  - Read directories in `~/.phonecc/sessions/`
-  - For each directory, read `session.json` for metadata. If the file doesn't exist or is corrupt, skip that directory silently.
-  - Check the in-memory agent map to determine status: `active` if agent process is running, `disconnected` if not.
-  - Return `{ sessions: Session[] }` sorted by `createdAt` descending.
-- **Closing a session (`DELETE /api/sessions/[id]`):**
-  - **Before deleting:** run `git log origin/{branchName}..HEAD --oneline` in the session folder. If there are unpushed commits, return `{ warning: "unpushed_commits", count: N, commits: ["commit msg 1", "commit msg 2"] }` with status 200 and a `requiresConfirmation: true` flag. The frontend will show a confirm dialog. If the request includes `{ confirmed: true }`, proceed with deletion.
-  - Kill the agent process if running (remove from in-memory map)
-  - Delete the entire folder `~/.phonecc/sessions/{id}/` recursively
-  - Return 200. Return 404 if folder doesn't exist.
-- **Reconnecting a session (`POST /api/sessions/[id]/reconnect`):**
-  - Check that the folder `~/.phonecc/sessions/{id}/` exists. Return 404 if not.
-  - If an agent is already running for this session, return 200 (no-op).
-  - Otherwise, spawn a new Claude Code SDK agent with `cwd` set to the folder. **Resume the previous conversation** using the SDK's resume/session mechanism so the agent has full context of prior messages. Add to the in-memory map.
-  - Return the session metadata with status `active`.
-- **In-memory agent map:** a module-level `Map<string, AgentProcess>` in `src/lib/session-manager.ts`. This map is lost on server restart, but sessions are recovered from disk via the list/reconnect flow.
-- **Install `@anthropic-ai/claude-code`** as a dependency.
-- **City list:** store in `src/lib/cities.ts` as a simple string array export.
-- **Verification:**
-  - `pnpm build` passes
-  - `curl POST /api/sessions` with a valid projectId: returns 200, session metadata, and the folder is created on disk at `~/.phonecc/sessions/{branchName}/`
-  - `curl GET /api/sessions` returns the session
-  - `curl POST /api/sessions` 5 more times: the 6th returns 409
-  - `curl DELETE /api/sessions/[id]`: folder is removed, subsequent GET doesn't include it
-  - `curl POST /api/sessions/[id]/reconnect` on a disconnected session: returns 200 with status `active`
+- Session manager in `src/lib/session-manager.ts` with in-memory agent map
+- Uses `@anthropic-ai/claude-agent-sdk` (v0.2.87) for Claude agent processes
+- City name list in `src/lib/cities.ts` (50 cities, lowercase kebab-case)
+- Session type definitions in `src/types/session.ts`
+- API routes:
+  - `POST /api/sessions` -- creates session (clone repo, create branch, spawn agent). 404 if project not found, 409 if max 5 sessions.
+  - `GET /api/sessions` -- lists all sessions with status (active/disconnected)
+  - `DELETE /api/sessions/[id]` -- closes session with unpushed commit safety check
+  - `POST /api/sessions/[id]/reconnect` -- reconnects disconnected session, resumes SDK conversation
+- Branch name generation: random city, checks remote + local for uniqueness, appends `-2`, `-3` if needed
+- SDK session ID persisted to `.sdk-session-id` file for resume across restarts
+- Clone URL embeds GitHub PAT for auth
+- `pnpm build` passes
+- API error paths verified with curl (400, 404, 409)
 
 ---
 
