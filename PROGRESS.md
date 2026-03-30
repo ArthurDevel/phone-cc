@@ -139,8 +139,8 @@
 
 ## Feature 6: Voice Input (Deepgram Flux)
 
-**Status:** TODO
-**Plan file:** --
+**Status:** PLANNED
+**Plan file:** `.docs/plans/2026.03.30-feature-6-voice-input.md`
 
 ### What to build
 
