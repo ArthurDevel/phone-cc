@@ -2,6 +2,7 @@
 
 # dependencies
 /node_modules
+.deepgram-ws-port
 /.pnp
 .pnp.*
 .yarn/*
