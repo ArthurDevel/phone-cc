@@ -1,65 +1,244 @@
-import Image from "next/image";
+/**
+ * Home page - Main app layout with top bar, sidebar, and chat view.
+ *
+ * Responsibilities:
+ * - Renders top bar with hamburger, branch name, PR badge, and git action buttons
+ * - Renders sidebar and chat view
+ * - Polls for PR status on active session
+ */
+
+"use client";
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useSession } from "@/contexts/session-context";
+import { Sidebar } from "@/components/sidebar";
+import { ChatView } from "@/components/chat-view";
+import type { PullRequest } from "@/types/pr";
+
+// ============================================================================
+// CONSTANTS
+// ============================================================================
+
+const PR_POLL_INTERVAL = 60_000;
+const PUSH_PROMPT = "Push all committed changes to the remote repository on the current branch. Use git push.";
+const PR_PROMPT = "Create a pull request from the current branch to main. Use gh pr create with a descriptive title and body based on the changes made.";
+
+// ============================================================================
+// EVENT HANDLERS / HOOKS
+// ============================================================================
+
+/**
+ * Polls the PR API for the active session and returns the current PR (if any).
+ * @param sessionId - The active session ID (or null)
+ * @returns The current PullRequest or null
+ */
+function usePrBadge(sessionId: string | null) {
+  const [pr, setPr] = useState<PullRequest | null>(null);
+  const [prevSessionId, setPrevSessionId] = useState(sessionId);
+  if (sessionId !== prevSessionId) {
+    setPrevSessionId(sessionId);
+    setPr(null);
+  }
+
+  useEffect(() => {
+    if (!sessionId) return;
+
+    let cancelled = false;
+
+    const fetchPr = () => {
+      fetch(`/api/sessions/${sessionId}/pr`)
+        .then((res) => (res.ok ? res.json() : { pr: null }))
+        .then((data) => {
+          if (!cancelled) setPr(data.pr || null);
+        })
+        .catch(() => {
+          if (!cancelled) setPr(null);
+        });
+    };
+
+    fetchPr();
+    const interval = setInterval(fetchPr, PR_POLL_INTERVAL);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [sessionId]);
+
+  return pr;
+}
+
+// ============================================================================
+// RENDER
+// ============================================================================
 
 export default function Home() {
+  const { activeSession, activeSessionId, statusMap, setSidebarOpen } = useSession();
+  const pr = usePrBadge(activeSessionId);
+  const sendingRef = useRef(false);
+  const [offline, setOffline] = useState(false);
+
+  // Network loss detection
+  useEffect(() => {
+    const handleOffline = () => setOffline(true);
+    const handleOnline = () => setOffline(false);
+    window.addEventListener("offline", handleOffline);
+    window.addEventListener("online", handleOnline);
+    setOffline(!navigator.onLine);
+    return () => {
+      window.removeEventListener("offline", handleOffline);
+      window.removeEventListener("online", handleOnline);
+    };
+  }, []);
+
+  /** Sends a predefined message to the active session's agent */
+  const sendAgentMessage = useCallback(
+    async (text: string) => {
+      if (!activeSessionId || sendingRef.current) return;
+      sendingRef.current = true;
+      try {
+        await fetch(`/api/sessions/${activeSessionId}/message`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
+      } finally {
+        sendingRef.current = false;
+      }
+    },
+    [activeSessionId]
+  );
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+    <div className="flex flex-col md:flex-row h-full">
+      <Sidebar />
+
+      <div className="flex flex-col flex-1 min-w-0 min-h-0">
+      {/* Top bar */}
+      <header className="flex items-center h-12 px-4 border-b border-border shrink-0">
+        <button
+          onClick={() => setSidebarOpen(true)}
+          className="w-8 h-8 flex items-center justify-center rounded-md hover:bg-surface-hover md:hidden"
+          aria-label="Open menu"
+        >
+          <HamburgerIcon />
+        </button>
+
+        {/* Branch name + PR badge */}
+        <div className="flex-1 flex items-center justify-center gap-2 min-w-0">
+          {activeSession && (
+            <svg className="w-3.5 h-3.5 shrink-0 text-muted" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.493 2.493 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25Zm-6 0a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Zm8.25-.75a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5ZM4.25 12a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Z" />
+            </svg>
+          )}
+          <span
+            className={`text-sm font-mono font-medium truncate ${
+              getBranchNameColor(activeSessionId ? statusMap[activeSessionId] : undefined, !!activeSession)
+            }`}
           >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+            {activeSession?.branchName ?? "PhoneCC"}
+          </span>
+          {pr && (
+            <a
+              href={pr.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-2 py-0.5 rounded-full bg-success/20 text-success text-[10px] font-medium shrink-0 hover:bg-success/30"
+            >
+              PR #{pr.number}
+            </a>
+          )}
         </div>
-      </main>
+
+        {/* Git action buttons */}
+        {activeSessionId ? (
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => sendAgentMessage(PUSH_PROMPT)}
+              className="w-8 h-8 flex items-center justify-center rounded-md hover:bg-surface-hover"
+              aria-label="Push changes"
+              title="Push changes"
+            >
+              <PushIcon />
+            </button>
+            <button
+              onClick={() => sendAgentMessage(PR_PROMPT)}
+              className="w-8 h-8 flex items-center justify-center rounded-md hover:bg-surface-hover"
+              aria-label="Create PR"
+              title="Create PR"
+            >
+              <PrIcon />
+            </button>
+          </div>
+        ) : (
+          <div className="w-8" />
+        )}
+      </header>
+
+      {/* Offline banner */}
+      {offline && (
+        <div className="px-4 py-2 bg-warning/20 text-warning text-xs text-center shrink-0">
+          You are offline. Reconnecting when network is available...
+        </div>
+      )}
+
+      <ChatView />
+      </div>
     </div>
+  );
+}
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
+/**
+ * Returns the text color class for the branch name based on runtime status.
+ * @param runtimeStatus - The session's runtime status
+ * @param hasSession - Whether a session is active
+ */
+function getBranchNameColor(runtimeStatus: string | undefined, hasSession: boolean): string {
+  if (!hasSession) return "text-muted";
+
+  switch (runtimeStatus) {
+    case "thinking":
+      return "text-warning";
+    case "error":
+      return "text-danger";
+    case "disconnected":
+      return "text-muted";
+    default:
+      return "text-foreground";
+  }
+}
+
+// ============================================================================
+// ICONS
+// ============================================================================
+
+function HamburgerIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <path d="M3 5h14M3 10h14M3 15h14" />
+    </svg>
+  );
+}
+
+function PushIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="12" y1="19" x2="12" y2="5" />
+      <polyline points="5 12 12 5 19 12" />
+    </svg>
+  );
+}
+
+function PrIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="18" cy="18" r="3" />
+      <circle cx="6" cy="6" r="3" />
+      <path d="M6 21V9a9 9 0 0 0 9 9" />
+    </svg>
   );
 }
