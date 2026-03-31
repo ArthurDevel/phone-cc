@@ -51,8 +51,8 @@ wss.on("connection", (clientWs) => {
   handleClientConnection(clientWs);
 });
 
-httpServer.listen(PORT, () => {
-  console.log(`[deepgram-ws] WebSocket server listening on port ${PORT}`);
+httpServer.listen(PORT, "127.0.0.1", () => {
+  console.log(`[deepgram-ws] WebSocket server listening on 127.0.0.1:${PORT}`);
 });
 
 // ============================================================================
