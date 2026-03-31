@@ -20,9 +20,12 @@ import {
 // CONSTANTS
 // ============================================================================
 
+// Generate token eagerly on server start (not on first request)
+getOrCreateToken();
+
 const COOKIE_OPTIONS = {
   httpOnly: true,
-  secure: process.env.NODE_ENV !== "development",
+  secure: (process.env.NEXT_PUBLIC_APP_URL ?? "").startsWith("https"),
   sameSite: "lax" as const,
   maxAge: COOKIE_MAX_AGE,
   path: "/",
@@ -44,9 +47,6 @@ const COOKIE_OPTIONS = {
  * @returns A NextResponse (redirect, pass-through, or 401)
  */
 export async function proxy(request: NextRequest): Promise<NextResponse> {
-  // Ensure the token file exists (lazy init on first request)
-  await getOrCreateToken();
-
   const { searchParams } = request.nextUrl;
   const tokenParam = searchParams.get("token");
 
