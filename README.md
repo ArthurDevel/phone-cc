@@ -1,36 +1,62 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# PhoneCC
 
-## Getting Started
+Mobile voice coding with parallel Claude Code sessions.
 
-First, run the development server:
+## Deploy to a VPS
+
+You need a fresh Ubuntu 24.04 VPS. Have these ready:
+
+- GitHub Personal Access Token (repo scope)
+- Deepgram API key (optional, for voice input)
+
+### 1. SSH into your server
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+ssh user@your-server-ip
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### 2. Install Node.js and Claude Code
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt install -y nodejs
+npm install -g @anthropic-ai/claude-code
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+### 3. Let Claude Code do the rest
 
-## Learn More
+```bash
+claude
+```
 
-To learn more about Next.js, take a look at the following resources:
+Once inside Claude Code, paste the contents of [`INSTALL.md`](./INSTALL.md). It will walk you through the full setup: clone, build, server hardening (UFW + fail2ban), and systemd autostart. It will ask you for your API keys along the way.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+### 4. Start the app and grab your token
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+When Claude Code finishes, it will print instructions. The key step: start the app manually first so you can see your auth token in the output.
 
-## Deploy on Vercel
+```bash
+cd /opt/phonecc && npx next start
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Copy the `phcc_...` token, then open `http://<server-ip>:3000?token=phcc_...` to log in.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+### 5. Hand off to systemd
+
+Once you've confirmed it works, stop the manual process (Ctrl+C) and start the background services:
+
+```bash
+sudo systemctl start phonecc
+sudo systemctl start phonecc-ws
+```
+
+The app will now autostart on reboot.
+
+## Local development
+
+```bash
+pnpm install
+pnpm dev:all
+```
+
+This starts the Next.js dev server on port 3000 and the Deepgram WebSocket server on port 3001.
