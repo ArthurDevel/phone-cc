@@ -36,10 +36,11 @@ const agents = new Map<string, AgentEntry>();
  * The SDK stores sessions at ~/.claude/projects/{encoded-path}/{session-id}.jsonl
  */
 async function loadMessagesFromSdk(cwd: string, sdkSessionId: string): Promise<Message[]> {
-  if (!sdkSessionId) return [];
+  console.log("[loadMessagesFromSdk] cwd:", cwd, "sdkSessionId:", sdkSessionId);
+  if (!sdkSessionId) { console.log("[loadMessagesFromSdk] no sdkSessionId, returning []"); return []; }
 
-  // The SDK encodes the cwd path: / becomes - , leading - is kept
-  const encodedPath = "-" + cwd.replace(/\//g, "-");
+  // The SDK encodes the cwd path: both / and . become -
+  const encodedPath = cwd.replace(/[/.]/g, "-");
   const jsonlPath = path.join(
     os.homedir(),
     ".claude",
@@ -47,11 +48,14 @@ async function loadMessagesFromSdk(cwd: string, sdkSessionId: string): Promise<M
     encodedPath,
     `${sdkSessionId}.jsonl`
   );
+  console.log("[loadMessagesFromSdk] jsonlPath:", jsonlPath);
 
   let data: string;
   try {
     data = await fs.readFile(jsonlPath, "utf-8");
-  } catch {
+    console.log("[loadMessagesFromSdk] read file, length:", data.length, "lines:", data.split("\n").length);
+  } catch (err) {
+    console.log("[loadMessagesFromSdk] failed to read file:", err);
     return [];
   }
 
@@ -167,6 +171,7 @@ async function loadMessagesFromSdk(cwd: string, sdkSessionId: string): Promise<M
     }
   }
 
+  console.log("[loadMessagesFromSdk] parsed", messages.length, "messages:", messages.map(m => ({ role: m.role, contentLen: m.content.length, tools: m.toolUses.length })));
   return messages;
 }
 
@@ -610,22 +615,28 @@ export async function closeSession(
 }
 
 export async function reconnectSession(id: string): Promise<Session | null> {
+  console.log("[reconnectSession] id:", id);
   const sessionDir = path.join(SESSIONS_DIR, id);
   try {
     await fs.access(sessionDir);
   } catch {
+    console.log("[reconnectSession] sessionDir not found:", sessionDir);
     return null;
   }
 
   const metadata = await readSessionMetadata(sessionDir);
+  console.log("[reconnectSession] metadata:", metadata);
   if (!metadata) return null;
 
   if (agents.has(id)) {
+    console.log("[reconnectSession] already in agents map, messages:", agents.get(id)!.messages.length);
     return { ...metadata, status: "active" };
   }
 
   const sdkSessionId = await readSdkSessionId(sessionDir);
+  console.log("[reconnectSession] sdkSessionId:", sdkSessionId);
   const messages = await loadMessagesFromSdk(sessionDir, sdkSessionId || "");
+  console.log("[reconnectSession] loaded", messages.length, "messages from SDK");
   ensureAgent(id, sessionDir, sdkSessionId, messages);
 
   return { ...metadata, status: "active" };
