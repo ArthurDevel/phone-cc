@@ -24,7 +24,12 @@ import type { PullRequest } from "@/types/pr";
 // ============================================================================
 
 const AUTO_SCROLL_THRESHOLD = 100;
-const DEEPGRAM_WS_URL = "ws://localhost:3001/deepgram";
+async function getDeepgramWsUrl(): Promise<string> {
+  const res = await fetch("/api/voice");
+  if (!res.ok) throw new Error("Deepgram WS server not running");
+  const { wsUrl } = await res.json();
+  return wsUrl;
+}
 const PR_URL_PATTERN = /https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+/;
 
 // ============================================================================
@@ -288,121 +293,196 @@ function useVoiceInput(
 
   const wsRef = useRef<WebSocket | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
-  const recorderRef = useRef<MediaRecorder | null>(null);
-  const accumulatedRef = useRef("");
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const workletRef = useRef<AudioWorkletNode | null>(null);
+  const completedTurnsRef = useRef<string[]>([]);
+  const currentTurnRef = useRef("");
+  const stoppingRef = useRef(false);
+  const sentRef = useRef(false);
+  const stopTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  /** Stops recording: closes WebSocket and MediaStream */
-  const stopRecording = useCallback(() => {
-    // Stop MediaRecorder
-    if (recorderRef.current && recorderRef.current.state !== "inactive") {
-      recorderRef.current.stop();
+  /** Returns the full accumulated transcript (completed turns + current in-progress turn) */
+  const getFullTranscript = () => {
+    const parts = [...completedTurnsRef.current];
+    if (currentTurnRef.current.trim()) parts.push(currentTurnRef.current.trim());
+    return parts.join(" ");
+  };
+
+  /** Fully tears down WS, audio context, and mic */
+  const teardown = useCallback(() => {
+    if (stopTimeoutRef.current) {
+      clearTimeout(stopTimeoutRef.current);
+      stopTimeoutRef.current = null;
     }
-    recorderRef.current = null;
-
-    // Close WebSocket
     if (wsRef.current) {
-      if (wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.close();
-      }
+      if (wsRef.current.readyState === WebSocket.OPEN) wsRef.current.close();
       wsRef.current = null;
     }
-
-    // Stop all audio tracks
     if (mediaStreamRef.current) {
       mediaStreamRef.current.getTracks().forEach((t) => t.stop());
       mediaStreamRef.current = null;
     }
+    stoppingRef.current = false;
+    completedTurnsRef.current = [];
+    currentTurnRef.current = "";
+    setRecording(false);
+    setInterimText("");
+  }, []);
 
-    // Send any remaining accumulated text
-    if (accumulatedRef.current.trim()) {
-      onTranscript(accumulatedRef.current.trim());
-      accumulatedRef.current = "";
+  /** Stops recording: kills audio, waits briefly for Deepgram EndOfTurn, then sends whatever we have */
+  const stopRecording = useCallback(() => {
+    console.log("[voice] stopRecording called");
+
+    // Stop sending audio immediately
+    if (workletRef.current) {
+      workletRef.current.disconnect();
+      workletRef.current = null;
+    }
+    if (audioCtxRef.current) {
+      audioCtxRef.current.close();
+      audioCtxRef.current = null;
+    }
+
+    // If WS is open, wait up to 3s for Deepgram to send EndOfTurn
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      stoppingRef.current = true;
+      sentRef.current = false;
+      stopTimeoutRef.current = setTimeout(() => {
+        if (sentRef.current) return;
+        sentRef.current = true;
+        console.log("[voice] EndOfTurn timeout, sending accumulated text");
+        const text = getFullTranscript();
+        if (text) onTranscript(text);
+        teardown();
+      }, 3000);
+    } else {
+      teardown();
     }
 
     setRecording(false);
-    setInterimText("");
-  }, [onTranscript]);
+  }, [onTranscript, teardown]);
 
   /** Starts recording: gets mic, opens WebSocket, streams audio */
   const startRecording = useCallback(async () => {
-    if (!sessionId) return;
-
-    // If agent is thinking, cancel it first
-    if (status === "thinking") {
-      await fetch(`/api/sessions/${sessionId}/cancel`, { method: "POST" });
+    console.log("[voice] startRecording called, sessionId:", sessionId, "status:", status);
+    if (!sessionId) {
+      console.log("[voice] no sessionId, aborting");
+      return;
     }
 
     try {
+      console.log("[voice] requesting mic access");
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      console.log("[voice] mic access granted");
       mediaStreamRef.current = stream;
 
-      const ws = new WebSocket(DEEPGRAM_WS_URL);
+      const wsUrl = await getDeepgramWsUrl();
+      console.log("[voice] opening WS to", wsUrl);
+      const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
-      accumulatedRef.current = "";
       setInterimText("");
       setRecording(true);
 
-      ws.onopen = () => {
-        // Start MediaRecorder to capture audio chunks
-        const recorder = new MediaRecorder(stream, {
-          mimeType: "audio/webm;codecs=opus",
-        });
-        recorderRef.current = recorder;
+      ws.onopen = async () => {
+        console.log("[voice] WS opened");
 
-        recorder.ondataavailable = (e) => {
-          if (e.data.size > 0 && ws.readyState === WebSocket.OPEN) {
+        // Use AudioContext + AudioWorklet to capture raw linear16 PCM at 16kHz
+        const audioCtx = new AudioContext({ sampleRate: 16000 });
+        audioCtxRef.current = audioCtx;
+
+        // Register the PCM worklet processor inline via a Blob URL
+        const processorCode = `
+          class PcmProcessor extends AudioWorkletProcessor {
+            process(inputs) {
+              const input = inputs[0];
+              if (input.length > 0) {
+                const float32 = input[0];
+                // Convert float32 [-1,1] to int16 linear16
+                const int16 = new Int16Array(float32.length);
+                for (let i = 0; i < float32.length; i++) {
+                  const s = Math.max(-1, Math.min(1, float32[i]));
+                  int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+                }
+                this.port.postMessage(int16.buffer, [int16.buffer]);
+              }
+              return true;
+            }
+          }
+          registerProcessor("pcm-processor", PcmProcessor);
+        `;
+        const blob = new Blob([processorCode], { type: "application/javascript" });
+        const blobUrl = URL.createObjectURL(blob);
+
+        await audioCtx.audioWorklet.addModule(blobUrl);
+        URL.revokeObjectURL(blobUrl);
+
+        const source = audioCtx.createMediaStreamSource(stream);
+        const worklet = new AudioWorkletNode(audioCtx, "pcm-processor");
+        workletRef.current = worklet;
+
+        // Send raw PCM chunks to WebSocket
+        worklet.port.onmessage = (e: MessageEvent) => {
+          if (ws.readyState === WebSocket.OPEN) {
             ws.send(e.data);
           }
         };
 
-        // Send chunks every 250ms
-        recorder.start(250);
+        source.connect(worklet);
+        worklet.connect(audioCtx.destination);
+        console.log("[voice] AudioWorklet started (linear16, 16kHz)");
       };
 
       ws.onmessage = (e) => {
         try {
           const data = JSON.parse(e.data);
+          console.log("[voice] WS message:", data.type, data.event || "", data.text?.slice(0, 50) || "");
 
           if (data.type === "transcript") {
-            if (data.is_final && data.text) {
-              // Accumulate final transcript segments
-              accumulatedRef.current += (accumulatedRef.current ? " " : "") + data.text;
-              setInterimText(accumulatedRef.current);
-
-              // If speech_final (endpointing), send and reset
-              if (data.speech_final && accumulatedRef.current.trim()) {
-                onTranscript(accumulatedRef.current.trim());
-                accumulatedRef.current = "";
-                setInterimText("");
-              }
-            } else if (!data.is_final && data.text) {
-              // Show interim (accumulated + current interim)
-              const preview = accumulatedRef.current
-                ? accumulatedRef.current + " " + data.text
-                : data.text;
-              setInterimText(preview);
+            // Update the current in-progress turn
+            if (data.text) {
+              currentTurnRef.current = data.text;
             }
+            // Always show full accumulated text as preview
+            setInterimText(getFullTranscript());
+
+            if (data.speech_final) {
+              // Turn finished — archive it and reset current
+              if (data.text) {
+                completedTurnsRef.current.push(data.text.trim());
+                currentTurnRef.current = "";
+              }
+
+              // If user already released the button, send everything now
+              if (stoppingRef.current && !sentRef.current) {
+                sentRef.current = true;
+                const text = getFullTranscript();
+                console.log("[voice] EndOfTurn + button released, sending:", text);
+                if (text) onTranscript(text);
+                setInterimText("");
+                teardown();
+              }
+            }
+          } else if (data.type === "error") {
+            console.error("[voice] error from server:", data.message);
           }
         } catch {
           // Ignore parse errors
         }
       };
 
-      ws.onerror = () => {
+      ws.onerror = (err) => {
+        console.error("[voice] WS error:", err);
         stopRecording();
       };
 
-      ws.onclose = () => {
-        // If we have accumulated text, send it
-        if (accumulatedRef.current.trim()) {
-          onTranscript(accumulatedRef.current.trim());
-          accumulatedRef.current = "";
-        }
+      ws.onclose = (e) => {
+        console.log("[voice] WS closed, code:", e.code, "reason:", e.reason);
       };
-    } catch {
+    } catch (err) {
+      console.error("[voice] startRecording failed:", err);
       setRecording(false);
     }
-  }, [sessionId, status, onTranscript, stopRecording]);
+  }, [sessionId, status, onTranscript, stopRecording, teardown]);
 
   const handlePointerDown = useCallback(() => {
     if (navigator.vibrate) navigator.vibrate(50);
