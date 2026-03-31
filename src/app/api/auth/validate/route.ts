@@ -82,12 +82,11 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
 
   // Token is valid -- set the auth cookie and return success
-  const isProduction = process.env.NODE_ENV !== "development";
   const response = NextResponse.json({ ok: true }, { status: 200 });
 
   response.cookies.set(COOKIE_NAME, token, {
     httpOnly: true,
-    secure: isProduction,
+    secure: (process.env.NEXT_PUBLIC_APP_URL ?? "").startsWith("https"),
     sameSite: "lax",
     maxAge: COOKIE_MAX_AGE,
     path: "/",

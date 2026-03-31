@@ -57,10 +57,13 @@ export async function getOrCreateToken(): Promise<string> {
 
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
   console.log("\n============================================================");
-  console.log("  PhoneCC Auth Token (first run)");
+  console.log("  PhoneCC Auth Token");
   console.log("============================================================");
   console.log(`  Token:  ${token}`);
   console.log(`  URL:    ${baseUrl}?token=${token}`);
+  console.log("");
+  console.log(`  \x1b[33mSave this!\x1b[0m You can find it later at:`);
+  console.log(`  ${TOKEN_PATH}`);
   console.log("============================================================\n");
 
   cachedToken = token;
