@@ -25,9 +25,9 @@ export function Sidebar() {
   const [showProjectPicker, setShowProjectPicker] = useState(false);
   const [creating, setCreating] = useState(false);
 
-  // Fetch projects when sidebar opens
+  // Fetch projects when sidebar opens or on initial mount (desktop has sidebar always visible)
   useEffect(() => {
-    if (sidebarOpen) {
+    if (sidebarOpen || window.matchMedia("(min-width: 768px)").matches) {
       fetch("/api/projects")
         .then((r) => r.json())
         .then((d) => setProjects(d.projects))
