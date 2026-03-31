@@ -16,10 +16,8 @@ npm install -g pnpm
 ### Phase 2: Clone and build
 
 ```
-cd /opt
-sudo git clone https://github.com/ArthurDevel/phone-cc.git phonecc
-sudo chown -R $USER:$USER /opt/phonecc
-cd /opt/phonecc
+git clone https://github.com/ArthurDevel/phone-cc.git ~/phonecc
+cd ~/phonecc
 pnpm install
 pnpm build
 ```
@@ -29,11 +27,11 @@ pnpm build
 Copy the example env file and tell me to fill in my credentials:
 
 ```
-cp /opt/phonecc/.env.example /opt/phonecc/.env.local
-chmod 600 /opt/phonecc/.env.local
+cp ~/phonecc/.env.example ~/phonecc/.env.local
+chmod 600 ~/phonecc/.env.local
 ```
 
-Then tell me to edit it: `nano /opt/phonecc/.env.local`
+Then tell me to edit it: `nano ~/phonecc/.env.local`
 
 Wait for me to confirm before continuing.
 
@@ -83,8 +81,8 @@ After=network.target
 [Service]
 Type=simple
 User={USER}
-WorkingDirectory=/opt/phonecc
-EnvironmentFile=/opt/phonecc/.env.local
+WorkingDirectory=/home/{USER}/phonecc
+EnvironmentFile=/home/{USER}/phonecc/.env.local
 Environment=NODE_ENV=production
 ExecStart=/usr/bin/npx next start
 Restart=on-failure
@@ -104,8 +102,8 @@ After=network.target
 [Service]
 Type=simple
 User={USER}
-WorkingDirectory=/opt/phonecc
-EnvironmentFile=/opt/phonecc/.env.local
+WorkingDirectory=/home/{USER}/phonecc
+EnvironmentFile=/home/{USER}/phonecc/.env.local
 ExecStart=/usr/bin/npx tsx src/server/deepgram-ws.ts
 Restart=on-failure
 RestartSec=5
@@ -126,28 +124,24 @@ sudo systemctl enable phonecc-ws
 
 **Do NOT start them yet.**
 
-### Phase 7: Done -- tell me what to do next
+### Phase 7: First run
 
-Print this message (with the actual values filled in):
+Tell me to run this command myself so I can see the auth token:
 
 ```
-============================================================
-  Setup complete. To start PhoneCC:
-
-  1. Start the app manually to see your auth token:
-     cd /opt/phonecc && npx next start
-
-  2. Copy the token from the output (phcc_...) and save it.
-     You can also find it later at: ~/.phonecc/auth-token
-
-  3. Open http://{SERVER_IP}:3000?token={YOUR_TOKEN} to log in.
-
-  4. Once confirmed working, stop the manual process (Ctrl+C)
-     and start the systemd services:
-     sudo systemctl start phonecc
-     sudo systemctl start phonecc-ws
-
-  5. Verify both services are running:
-     sudo systemctl status phonecc phonecc-ws
-============================================================
+cd ~/phonecc && npx next start
 ```
+
+Tell me to copy the `phcc_...` token from the output and save it. Tell me the login URL: `http://{SERVER_IP}:3000?token={TOKEN}` (fill in the server IP). Then wait for me to confirm I've saved the token before continuing.
+
+### Phase 8: Start services
+
+Once I confirm, stop the manual process for me (or tell me to Ctrl+C), then start and verify both services:
+
+```
+sudo systemctl start phonecc
+sudo systemctl start phonecc-ws
+sudo systemctl status phonecc phonecc-ws
+```
+
+Confirm both are running. If either failed, troubleshoot.

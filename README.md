@@ -29,28 +29,7 @@ npm install -g @anthropic-ai/claude-code
 claude
 ```
 
-Once inside Claude Code, paste the contents of [`INSTALL.md`](./INSTALL.md). It will walk you through the full setup: clone, build, server hardening (UFW + fail2ban), and systemd autostart. It will ask you for your API keys along the way.
-
-### 4. Start the app and grab your token
-
-When Claude Code finishes, it will print instructions. The key step: start the app manually first so you can see your auth token in the output.
-
-```bash
-cd /opt/phonecc && npx next start
-```
-
-Copy the `phcc_...` token, then open `http://<server-ip>:3000?token=phcc_...` to log in.
-
-### 5. Hand off to systemd
-
-Once you've confirmed it works, stop the manual process (Ctrl+C) and start the background services:
-
-```bash
-sudo systemctl start phonecc
-sudo systemctl start phonecc-ws
-```
-
-The app will now autostart on reboot.
+Once inside Claude Code, paste the contents of [`INSTALL.md`](./INSTALL.md). It handles the full setup: clone, build, server hardening (UFW + fail2ban), and systemd autostart. It will ask you for your env variables and tell you when to start the app to grab your auth token. Follow along -- the whole process takes a few minutes.
 
 ## Local development
 
