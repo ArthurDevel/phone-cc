@@ -27,6 +27,149 @@ interface AgentEntry {
 
 const agents = new Map<string, AgentEntry>();
 
+// ---------------------------------------------------------------------------
+// SDK session history reader
+// ---------------------------------------------------------------------------
+
+/**
+ * Reads the SDK's JSONL session file and converts it to our Message[] format.
+ * The SDK stores sessions at ~/.claude/projects/{encoded-path}/{session-id}.jsonl
+ */
+async function loadMessagesFromSdk(cwd: string, sdkSessionId: string): Promise<Message[]> {
+  if (!sdkSessionId) return [];
+
+  // The SDK encodes the cwd path: / becomes - , leading - is kept
+  const encodedPath = "-" + cwd.replace(/\//g, "-");
+  const jsonlPath = path.join(
+    os.homedir(),
+    ".claude",
+    "projects",
+    encodedPath,
+    `${sdkSessionId}.jsonl`
+  );
+
+  let data: string;
+  try {
+    data = await fs.readFile(jsonlPath, "utf-8");
+  } catch {
+    return [];
+  }
+
+  const messages: Message[] = [];
+  let currentAssistant: Message | null = null;
+
+  for (const line of data.split("\n")) {
+    if (!line.trim()) continue;
+    let entry: Record<string, unknown>;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+
+    if (entry.type === "user" && entry.message) {
+      const msg = entry.message as { role: string; content: unknown };
+      if (msg.role !== "user") continue;
+
+      // Extract text from user messages (skip tool_result messages)
+      const content = msg.content;
+      if (typeof content === "string") {
+        messages.push({
+          id: (entry.uuid as string) || crypto.randomUUID(),
+          role: "user",
+          content,
+          toolUses: [],
+          timestamp: new Date((entry.timestamp as string) || Date.now()).getTime(),
+        });
+        currentAssistant = null;
+      } else if (Array.isArray(content)) {
+        // Check if this is a user text message or a tool_result
+        const textBlocks = (content as Array<{ type: string; text?: string }>).filter(
+          (b) => b.type === "text" && b.text
+        );
+        const toolResults = (content as Array<{ type: string; tool_use_id?: string; content?: unknown }>).filter(
+          (b) => b.type === "tool_result"
+        );
+
+        if (textBlocks.length > 0 && toolResults.length === 0) {
+          messages.push({
+            id: (entry.uuid as string) || crypto.randomUUID(),
+            role: "user",
+            content: textBlocks.map((b) => b.text).join(""),
+            toolUses: [],
+            timestamp: new Date((entry.timestamp as string) || Date.now()).getTime(),
+          });
+          currentAssistant = null;
+        }
+
+        // Attach tool results to the current assistant message
+        if (toolResults.length > 0 && currentAssistant) {
+          for (const tr of toolResults) {
+            const toolUse = currentAssistant.toolUses.find(
+              (t) => t.id === tr.tool_use_id
+            );
+            if (toolUse) {
+              let output = "";
+              if (typeof tr.content === "string") {
+                output = tr.content;
+              } else if (Array.isArray(tr.content)) {
+                output = (tr.content as Array<{ type: string; text?: string }>)
+                  .map((c) => (c.type === "text" ? c.text || "" : ""))
+                  .join("");
+              }
+              toolUse.output = output;
+              toolUse.status = (tr as { is_error?: boolean }).is_error ? "failed" : "completed";
+            }
+          }
+        }
+      }
+    }
+
+    if (entry.type === "assistant" && entry.message) {
+      const msg = entry.message as {
+        role: string;
+        content: Array<{ type: string; text?: string; thinking?: string; id?: string; name?: string; input?: unknown }>;
+      };
+      if (msg.role !== "assistant" || !Array.isArray(msg.content)) continue;
+
+      if (!currentAssistant) {
+        currentAssistant = {
+          id: (entry.uuid as string) || crypto.randomUUID(),
+          role: "assistant",
+          content: "",
+          toolUses: [],
+          timestamp: new Date((entry.timestamp as string) || Date.now()).getTime(),
+        };
+        messages.push(currentAssistant);
+      }
+
+      for (const block of msg.content) {
+        if (block.type === "text" && block.text) {
+          currentAssistant.content += block.text;
+        } else if (block.type === "tool_use" && block.id && block.name) {
+          // Only add if not already present (SDK emits multiple assistant entries for same turn)
+          if (!currentAssistant.toolUses.find((t) => t.id === block.id)) {
+            currentAssistant.toolUses.push({
+              id: block.id,
+              toolName: block.name,
+              input: (block.input as Record<string, unknown>) || {},
+              output: "",
+              status: "running",
+            });
+          }
+        }
+      }
+    }
+
+    // result type marks end of a turn
+    if (entry.type === "result") {
+      currentAssistant = null;
+    }
+  }
+
+  return messages;
+}
+
 async function ensureSessionsDir() {
   await fs.mkdir(SESSIONS_DIR, { recursive: true });
 }
@@ -120,7 +263,7 @@ async function writeSdkSessionId(sessionDir: string, id: string) {
   await fs.writeFile(path.join(sessionDir, ".sdk-session-id"), id, "utf-8");
 }
 
-function ensureAgent(sessionId: string, cwd: string, sdkSessionId?: string): AgentEntry {
+function ensureAgent(sessionId: string, cwd: string, sdkSessionId?: string, existingMessages?: Message[]): AgentEntry {
   let entry = agents.get(sessionId);
   if (!entry) {
     entry = {
@@ -128,7 +271,7 @@ function ensureAgent(sessionId: string, cwd: string, sdkSessionId?: string): Age
       cwd,
       emitter: new EventEmitter(),
       processing: false,
-      messages: [],
+      messages: existingMessages || [],
       currentQuery: null,
       currentAbort: null,
     };
@@ -360,6 +503,10 @@ export async function createSession(projectId: string): Promise<Session> {
     await execFileAsync("git", ["checkout", "-b", branchName], {
       cwd: sessionDir,
     });
+
+    await execFileAsync("git", ["push", "-u", "origin", branchName], {
+      cwd: sessionDir,
+    });
   } catch (err) {
     await fs.rm(sessionDir, { recursive: true, force: true }).catch(() => {});
     const message =
@@ -478,7 +625,8 @@ export async function reconnectSession(id: string): Promise<Session | null> {
   }
 
   const sdkSessionId = await readSdkSessionId(sessionDir);
-  ensureAgent(id, sessionDir, sdkSessionId);
+  const messages = await loadMessagesFromSdk(sessionDir, sdkSessionId || "");
+  ensureAgent(id, sessionDir, sdkSessionId, messages);
 
   return { ...metadata, status: "active" };
 }

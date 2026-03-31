@@ -113,7 +113,7 @@ export default function Home() {
     <div className="flex flex-col md:flex-row h-full">
       <Sidebar />
 
-      <div className="flex flex-col flex-1 min-w-0">
+      <div className="flex flex-col flex-1 min-w-0 min-h-0">
       {/* Top bar */}
       <header className="flex items-center h-12 px-4 border-b border-border shrink-0">
         <button
