@@ -25,7 +25,12 @@ interface AgentEntry {
   currentAbort: AbortController | null;
 }
 
-const agents = new Map<string, AgentEntry>();
+// Persist across Next.js hot-reloads in dev by attaching to globalThis
+const globalAgents = globalThis as unknown as { __phonecc_agents?: Map<string, AgentEntry> };
+if (!globalAgents.__phonecc_agents) {
+  globalAgents.__phonecc_agents = new Map<string, AgentEntry>();
+}
+const agents = globalAgents.__phonecc_agents;
 
 // ---------------------------------------------------------------------------
 // SDK session history reader
@@ -287,8 +292,10 @@ function ensureAgent(sessionId: string, cwd: string, sdkSessionId?: string, exis
 }
 
 export async function sendMessage(sessionId: string, text: string): Promise<void> {
+  console.log("[sendMessage] sessionId:", sessionId, "text:", text.slice(0, 50));
   const entry = agents.get(sessionId);
-  if (!entry) throw new Error("Session not active");
+  if (!entry) { console.log("[sendMessage] session not in agents map!"); throw new Error("Session not active"); }
+  console.log("[sendMessage] sdkSessionId:", entry.sdkSessionId, "cwd:", entry.cwd);
 
   // Add user message
   const userMsg: Message = {
@@ -323,7 +330,9 @@ export async function sendMessage(sessionId: string, text: string): Promise<void
   let currentAssistantMsg: Message | null = null;
 
   try {
+    console.log("[sendMessage] starting query loop...");
     for await (const message of q) {
+      console.log("[sendMessage] got message type:", message.type, "subtype" in message ? message.subtype : "");
       if (message.type === "system" && message.subtype === "init") {
         entry.sdkSessionId = message.session_id;
         await writeSdkSessionId(entry.cwd, message.session_id);
@@ -439,7 +448,8 @@ export async function sendMessage(sessionId: string, text: string): Promise<void
         break;
       }
     }
-  } catch {
+  } catch (err) {
+    console.log("[sendMessage] caught error:", err);
     if (!abortController.signal.aborted) {
       entry.emitter.emit("sse", "status_change", { status: "error" });
     }
@@ -449,6 +459,7 @@ export async function sendMessage(sessionId: string, text: string): Promise<void
     return;
   }
 
+  console.log("[sendMessage] query loop finished successfully");
   entry.processing = false;
   entry.currentQuery = null;
   entry.currentAbort = null;

@@ -7,7 +7,7 @@
  * - Keeps connection open until client disconnects
  */
 
-import { getEventEmitter } from "@/lib/session-manager";
+import { getEventEmitter, reconnectSession } from "@/lib/session-manager";
 
 // ============================================================================
 // ENDPOINT
@@ -18,9 +18,21 @@ export async function GET(
   ctx: RouteContext<"/api/sessions/[id]/stream">
 ) {
   const { id } = await ctx.params;
-  const emitter = getEventEmitter(id);
+  let emitter = getEventEmitter(id);
+
+  // Auto-reconnect if session isn't in memory (e.g. after page refresh)
+  if (!emitter) {
+    console.log("[stream] session not in memory, reconnecting:", id);
+    try {
+      await reconnectSession(id);
+      emitter = getEventEmitter(id);
+    } catch {
+      // Session doesn't exist on disk
+    }
+  }
 
   if (!emitter) {
+    console.log("[stream] session not found after reconnect:", id);
     return Response.json({ error: "Session not found" }, { status: 404 });
   }
 
