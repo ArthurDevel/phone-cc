@@ -10,6 +10,7 @@
 "use client";
 
 import { createContext, useCallback, useContext, useState } from "react";
+import { uuid } from "@/lib/uuid";
 
 // ============================================================================
 // CONSTANTS
@@ -58,7 +59,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
    * @param variant - Color variant (error/warning/success)
    */
   const addToast = useCallback((message: string, variant: ToastVariant) => {
-    const id = crypto.randomUUID();
+    const id = uuid();
     setToasts((prev) => [...prev, { id, message, variant }]);
 
     setTimeout(() => {

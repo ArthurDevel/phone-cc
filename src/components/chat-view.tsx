@@ -18,6 +18,7 @@ import { renderMarkdown } from "@/lib/markdown";
 import { PrCard } from "@/components/pr-card";
 import type { Message, ToolUse } from "@/types/message";
 import type { PullRequest } from "@/types/pr";
+import { uuid } from "@/lib/uuid";
 
 // ============================================================================
 // CONSTANTS
@@ -138,7 +139,7 @@ function useChatStream(
             };
           } else {
             updated.push({
-              id: crypto.randomUUID(),
+              id: uuid(),
               role: "assistant",
               content: data.text,
               toolUses: [],
@@ -157,7 +158,7 @@ function useChatStream(
           let last = updated[updated.length - 1];
           if (!last || last.role !== "assistant") {
             last = {
-              id: crypto.randomUUID(),
+              id: uuid(),
               role: "assistant",
               content: "",
               toolUses: [],
