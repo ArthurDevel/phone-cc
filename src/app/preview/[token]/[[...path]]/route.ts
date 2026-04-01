@@ -1,134 +1,64 @@
 /**
- * Catch-all reverse proxy that forwards HTTP requests to localhost ports
- * based on preview tokens.
+ * Preview entry point. Validates a preview token, sets a cookie identifying
+ * the active preview port, and redirects to "/".
  *
  * Responsibilities:
  * - Validates preview tokens via lookupToken
- * - Forwards requests to the correct localhost:{port}/{path}
- * - Strips hop-by-hop headers from the proxied response
- * - Rejects unsafe ports (< 1024 and port 3000) for SSRF prevention
+ * - Checks port safety (SSRF prevention)
+ * - Sets the phonecc_preview cookie with the target port
+ * - Redirects the browser to "/" where proxy.ts will handle rewriting
  */
 
-import { lookupToken } from "@/lib/preview-manager";
+import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
+import { lookupToken, PREVIEW_COOKIE_NAME } from "@/lib/preview-manager";
 
 // ============================================================================
 // CONSTANTS
 // ============================================================================
 
 /** The port the Next.js app runs on -- must be blocked to prevent request loops. */
-const APP_PORT = 3000;
+const APP_PORT = parseInt(process.env.PORT || "3000", 10);
 
 /** Minimum allowed port (inclusive). Ports below this are privileged. */
 const MIN_ALLOWED_PORT = 1024;
 
-/** Headers that must not be forwarded from the proxied response. */
-const HOP_BY_HOP_HEADERS = [
-  "transfer-encoding",
-  "connection",
-  "keep-alive",
-  "upgrade",
-];
+/** Maximum valid port number. */
+const MAX_PORT = 65535;
 
 // ============================================================================
 // ENDPOINT HANDLERS
 // ============================================================================
 
-export async function GET(
-  request: Request,
-  ctx: RouteContext<"/preview/[token]/[[...path]]">
-) {
-  const { token, path } = await ctx.params;
-  return proxyRequest(request, token, path);
-}
-
-export async function POST(
-  request: Request,
-  ctx: RouteContext<"/preview/[token]/[[...path]]">
-) {
-  const { token, path } = await ctx.params;
-  return proxyRequest(request, token, path);
-}
-
-export async function PUT(
-  request: Request,
-  ctx: RouteContext<"/preview/[token]/[[...path]]">
-) {
-  const { token, path } = await ctx.params;
-  return proxyRequest(request, token, path);
-}
-
-export async function PATCH(
-  request: Request,
-  ctx: RouteContext<"/preview/[token]/[[...path]]">
-) {
-  const { token, path } = await ctx.params;
-  return proxyRequest(request, token, path);
-}
-
-export async function DELETE(
-  request: Request,
-  ctx: RouteContext<"/preview/[token]/[[...path]]">
-) {
-  const { token, path } = await ctx.params;
-  return proxyRequest(request, token, path);
-}
-
-// ============================================================================
-// HELPER FUNCTIONS
-// ============================================================================
-
 /**
- * Core proxy logic: validates the token, builds the target URL, forwards the
- * request to localhost:{port}/{path}, and returns the response with hop-by-hop
- * headers stripped.
+ * Validates the preview token, sets the preview cookie, and redirects to "/".
  *
- * @param request - The incoming HTTP request
- * @param token - The preview token string from the URL
- * @param pathSegments - The remaining path segments after the token (undefined when no sub-path)
- * @returns A proxied Response, or a 404 if the token is invalid
+ * @param _request - The incoming request (unused)
+ * @param ctx - Route context containing the token param
+ * @returns A redirect response to "/"
  */
-export async function proxyRequest(
-  request: Request,
-  token: string,
-  pathSegments: string[] | undefined
-): Promise<Response> {
-  // Validate token
+export async function GET(
+  _request: Request,
+  ctx: RouteContext<"/preview/[token]/[[...path]]">
+) {
+  const { token } = await ctx.params;
+
   const entry = lookupToken(token);
   if (!entry) {
     return Response.json({ error: "Not found" }, { status: 404 });
   }
 
-  // SSRF prevention: reject dangerous ports
-  if (entry.port < MIN_ALLOWED_PORT || entry.port === APP_PORT) {
+  // SSRF prevention: reject privileged, self-referencing, or out-of-range ports
+  if (entry.port < MIN_ALLOWED_PORT || entry.port === APP_PORT || entry.port > MAX_PORT) {
     return Response.json({ error: "Not found" }, { status: 404 });
   }
 
-  // Build the target URL
-  const path = pathSegments ? pathSegments.join("/") : "";
-  const targetUrl = `http://localhost:${entry.port}/${path}`;
-
-  // Forward the request with original headers
-  const headers = new Headers(request.headers);
-  headers.set("host", `localhost:${entry.port}`);
-
-  const response = await fetch(targetUrl, {
-    method: request.method,
-    headers,
-    body: request.body,
-    // @ts-expect-error -- duplex is required for streaming request bodies in Node
-    duplex: "half",
-    redirect: "manual",
+  const cookieStore = await cookies();
+  cookieStore.set(PREVIEW_COOKIE_NAME, String(entry.port), {
+    maxAge: 14400,
+    httpOnly: true,
+    path: "/",
   });
 
-  // Strip hop-by-hop headers from the response
-  const responseHeaders = new Headers(response.headers);
-  for (const header of HOP_BY_HOP_HEADERS) {
-    responseHeaders.delete(header);
-  }
-
-  return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers: responseHeaders,
-  });
+  redirect("/");
 }
