@@ -467,12 +467,19 @@ export async function sendMessage(sessionId: string, text: string): Promise<void
     }
   } catch (err) {
     console.log("[sendMessage] caught error:", err);
-    if (!abortController.signal.aborted) {
-      entry.emitter.emit("sse", "status_change", { status: "error" });
-    }
     entry.processing = false;
     entry.currentQuery = null;
     entry.currentAbort = null;
+
+    if (abortController.signal.aborted) {
+      // User-initiated cancel -- tell the frontend to go back to idle
+      entry.emitter.emit("sse", "message_end", {
+        content: currentAssistantMsg?.content,
+      });
+      entry.emitter.emit("sse", "status_change", { status: "idle" });
+    } else {
+      entry.emitter.emit("sse", "status_change", { status: "error" });
+    }
     return;
   }
 

@@ -327,6 +327,7 @@ function useVoiceInput(
   onTranscript: (text: string) => void
 ) {
   const [recording, setRecording] = useState(false);
+  const [processing, setProcessing] = useState(false);
   const [interimText, setInterimText] = useState("");
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -364,6 +365,7 @@ function useVoiceInput(
     completedTurnsRef.current = [];
     currentTurnRef.current = "";
     setRecording(false);
+    setProcessing(false);
     setInterimText("");
   }, []);
 
@@ -385,6 +387,7 @@ function useVoiceInput(
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       stoppingRef.current = true;
       sentRef.current = false;
+      setProcessing(true);
       stopTimeoutRef.current = setTimeout(() => {
         if (sentRef.current) return;
         sentRef.current = true;
@@ -533,6 +536,7 @@ function useVoiceInput(
 
   return {
     recording,
+    processing,
     interimText,
     handlePointerDown,
     handlePointerUp,
@@ -838,8 +842,14 @@ export function ChatView() {
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
 
-  const { recording, interimText, handlePointerDown, handlePointerUp } =
+  const { recording, processing: voiceProcessing, interimText, handlePointerDown, handlePointerUp } =
     useVoiceInput(activeSessionId, status, sendMessage);
+
+  /** Cancels the currently running agent turn */
+  const handleCancel = useCallback(async () => {
+    if (!activeSessionId) return;
+    await fetch(`/api/sessions/${activeSessionId}/cancel`, { method: "POST" });
+  }, [activeSessionId]);
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const isAtBottomRef = useRef(true);
@@ -1011,35 +1021,52 @@ export function ChatView() {
           className="flex-1 min-h-[40px] max-h-24 px-3 py-2 rounded-lg bg-surface border border-border text-sm text-foreground placeholder:text-muted focus:outline-none focus:border-accent resize-none"
         />
 
-        {/* Send button (visible when text is entered) */}
-        {inputText.trim() ? (
+        {/* Cancel button (visible when agent is processing) */}
+        {status === "thinking" ? (
           <button
-            onClick={handleSend}
-            className="w-10 h-10 rounded-full bg-accent flex items-center justify-center shrink-0 hover:bg-accent-hover transition-colors"
-            aria-label="Send message"
+            onClick={handleCancel}
+            className="w-14 h-14 rounded-full bg-danger flex items-center justify-center shrink-0 hover:bg-danger/80 transition-colors active:scale-95"
+            aria-label="Cancel agent"
           >
-            <SendIcon />
+            <StopIcon />
           </button>
-        ) : null}
+        ) : (
+          <>
+            {/* Send button (visible when text is entered) */}
+            {inputText.trim() ? (
+              <button
+                onClick={handleSend}
+                className="w-10 h-10 rounded-full bg-accent flex items-center justify-center shrink-0 hover:bg-accent-hover transition-colors"
+                aria-label="Send message"
+              >
+                <SendIcon />
+              </button>
+            ) : null}
 
-        {/* Mic button (push-to-talk) */}
-        <button
-          onPointerDown={handlePointerDown}
-          onPointerUp={handlePointerUp}
-          onPointerLeave={recording ? handlePointerUp : undefined}
-          className={`w-14 h-14 rounded-full flex items-center justify-center shrink-0 transition-transform transition-colors relative active:scale-95 ${
-            recording
-              ? "bg-danger"
-              : "bg-accent hover:bg-accent-hover"
-          }`}
-          aria-label="Push to talk"
-        >
-          {/* Pulsing ring animation when recording */}
-          {recording && (
-            <span className="absolute inset-0 rounded-full bg-danger animate-ping opacity-30" />
-          )}
-          <MicIcon />
-        </button>
+            {/* Mic button (push-to-talk) */}
+            <button
+              onPointerDown={voiceProcessing ? undefined : handlePointerDown}
+              onPointerUp={recording ? handlePointerUp : undefined}
+              onPointerLeave={recording ? handlePointerUp : undefined}
+              className={`w-14 h-14 rounded-full flex items-center justify-center shrink-0 transition-transform transition-colors relative active:scale-95 ${
+                recording
+                  ? "bg-danger"
+                  : voiceProcessing
+                    ? "bg-accent/70"
+                    : "bg-accent hover:bg-accent-hover"
+              }`}
+              aria-label={voiceProcessing ? "Processing voice" : "Push to talk"}
+              disabled={voiceProcessing}
+            >
+              {/* Pulsing ring animation when recording */}
+              {recording && (
+                <span className="absolute inset-0 rounded-full bg-danger animate-ping opacity-30" />
+              )}
+              {/* Spinner when waiting for Deepgram to finalize transcript */}
+              {voiceProcessing ? <SpinnerIconLarge /> : <MicIcon />}
+            </button>
+          </>
+        )}
       </div>
 
       {/* Tool use detail modal */}
@@ -1055,6 +1082,23 @@ function SendIcon() {
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <line x1="22" y1="2" x2="11" y2="13" />
       <polygon points="22 2 15 22 11 13 2 9 22 2" />
+    </svg>
+  );
+}
+
+function StopIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="white">
+      <rect x="4" y="4" width="16" height="16" rx="2" />
+    </svg>
+  );
+}
+
+function SpinnerIconLarge() {
+  return (
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" className="animate-spin">
+      <circle cx="12" cy="12" r="10" opacity="0.3" />
+      <path d="M12 2a10 10 0 0 1 10 10" strokeLinecap="round" />
     </svg>
   );
 }
