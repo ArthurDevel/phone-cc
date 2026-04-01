@@ -8,6 +8,7 @@
  */
 
 import { sendMessage } from "@/lib/session-manager";
+import { rewriteUserInput } from "@/lib/preview-manager";
 
 // ============================================================================
 // ENDPOINT
@@ -31,8 +32,11 @@ export async function POST(
     return Response.json({ error: "text is required" }, { status: 400 });
   }
 
+  // Rewrite any preview URLs back to localhost before sending to agent
+  const rewrittenText = rewriteUserInput(text.trim());
+
   // Fire-and-forget: the response streams via SSE
-  sendMessage(id, text.trim()).catch(() => {
+  sendMessage(id, rewrittenText).catch(() => {
     // Errors are emitted via SSE status_change events
   });
 
