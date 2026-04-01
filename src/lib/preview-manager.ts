@@ -63,20 +63,12 @@ const tokenStore = globalTokens.__phonecc_preview_tokens;
  * @returns The text with localhost URLs replaced by preview URLs
  */
 export function rewriteAgentOutput(sessionId: string, text: string): string {
-  console.log("[rewriteAgentOutput] sessionId:", sessionId, "text length:", text.length);
-  console.log("[rewriteAgentOutput] text snippet:", text.slice(0, 200));
-  const matches = text.match(LOCALHOST_URL_REGEX);
-  console.log("[rewriteAgentOutput] localhost matches:", matches);
-  const result = text.replace(LOCALHOST_URL_REGEX, (_match, portStr: string, pathPart?: string) => {
+  return text.replace(LOCALHOST_URL_REGEX, (_match, portStr: string, pathPart?: string) => {
     const port = parseInt(portStr, 10);
     const token = getOrCreateToken(sessionId, port);
     const urlPath = pathPart ?? "";
-    const replacement = `/preview/${token.token}${urlPath}`;
-    console.log("[rewriteAgentOutput] replacing:", _match, "→", replacement);
-    return replacement;
+    return `/preview/${token.token}${urlPath}`;
   });
-  console.log("[rewriteAgentOutput] result snippet:", result.slice(0, 200));
-  return result;
 }
 
 /**
