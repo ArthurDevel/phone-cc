@@ -6,6 +6,7 @@ import { promisify } from "util";
 import { EventEmitter } from "events";
 import { query, type Query } from "@anthropic-ai/claude-agent-sdk";
 import { readProjects } from "@/lib/projects";
+import { readSettings } from "@/lib/settings";
 import { CITIES } from "@/lib/cities";
 import { rewriteAgentOutput, cleanupSession as cleanupPreviewTokens } from "@/lib/preview-manager";
 import type { Session, SessionMetadata } from "@/types/session";
@@ -315,6 +316,8 @@ export async function sendMessage(sessionId: string, text: string): Promise<void
   const abortController = new AbortController();
   entry.currentAbort = abortController;
 
+  const settings = await readSettings();
+
   const q = query({
     prompt: text,
     options: {
@@ -324,6 +327,9 @@ export async function sendMessage(sessionId: string, text: string): Promise<void
       allowDangerouslySkipPermissions: true,
       resume: entry.sdkSessionId || undefined,
       includePartialMessages: true,
+      env: settings.enableCloudMcpServers
+        ? undefined
+        : { ...process.env, ENABLE_CLAUDEAI_MCP_SERVERS: "false" },
     },
   });
   entry.currentQuery = q;
@@ -461,12 +467,19 @@ export async function sendMessage(sessionId: string, text: string): Promise<void
     }
   } catch (err) {
     console.log("[sendMessage] caught error:", err);
-    if (!abortController.signal.aborted) {
-      entry.emitter.emit("sse", "status_change", { status: "error" });
-    }
     entry.processing = false;
     entry.currentQuery = null;
     entry.currentAbort = null;
+
+    if (abortController.signal.aborted) {
+      // User-initiated cancel -- tell the frontend to go back to idle
+      entry.emitter.emit("sse", "message_end", {
+        content: currentAssistantMsg?.content,
+      });
+      entry.emitter.emit("sse", "status_change", { status: "idle" });
+    } else {
+      entry.emitter.emit("sse", "status_change", { status: "error" });
+    }
     return;
   }
 

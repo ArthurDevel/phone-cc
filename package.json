@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "dev:ws": "tsx src/server/deepgram-ws.ts",
+    "dev:updater": "tsx src/server/updater.ts",
     "dev:all": "concurrently \"pnpm dev\" \"pnpm dev:ws\"",
     "build": "next build",
     "start": "next start",
