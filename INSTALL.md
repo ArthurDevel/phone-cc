@@ -168,3 +168,49 @@ sudo systemctl status phonecc phonecc-ws
 ```
 
 Confirm both are running. If either failed, troubleshoot.
+
+### Phase 11: Updater service (self-update from settings page)
+
+The updater is a standalone HTTP server that runs alongside the Next.js app. It handles `git pull`, `pnpm install`, `pnpm build`, and service restarts so the user can update from the Settings page without SSH.
+
+**Note**: The VPS clone is treated as read-only. The updater uses `git reset --hard` to pull updates, so never make local edits to files on the VPS.
+
+#### Sudoers
+
+The `phonecc` user needs passwordless sudo for the two restart commands. Create `/etc/sudoers.d/phonecc-updater`:
+
+```
+phonecc ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart phonecc, /usr/bin/systemctl restart phonecc-ws
+```
+
+#### Systemd service
+
+Create **`/etc/systemd/system/phonecc-updater.service`**:
+
+```
+[Unit]
+Description=PhoneCC Updater service
+After=network.target
+
+[Service]
+Type=simple
+User=phonecc
+WorkingDirectory=/home/phonecc/phonecc
+ExecStart=/usr/bin/npx tsx src/server/updater.ts
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start:
+
+```
+sudo systemctl daemon-reload
+sudo systemctl enable phonecc-updater
+sudo systemctl start phonecc-updater
+sudo systemctl status phonecc-updater
+```
+
+Do NOT open port 9473 in UFW. The updater binds to 127.0.0.1 only.
