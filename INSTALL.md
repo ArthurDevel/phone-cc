@@ -47,6 +47,14 @@ pnpm build
 
 **Verify:** `ls ~/phonecc/package.json` and `ls ~/phonecc/.next/BUILD_ID` must both exist. All remaining phases assume the app lives at `/home/phonecc/phonecc/`. Do not clone or install elsewhere. If the build failed, do not proceed.
 
+**Verify correct ownership** (guards against accidentally running Phase 4 as root):
+
+```
+ls -la ~/phonecc/package.json
+```
+
+The output must show `phonecc phonecc` as owner and group. If it shows `root root`, the clone or install was run as the wrong user. Fix with `sudo chown -R phonecc:phonecc ~/phonecc` before continuing.
+
 ### Phase 5: Environment file
 
 Copy the example env file and tell me to fill in my credentials:
