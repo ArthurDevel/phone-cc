@@ -10,6 +10,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { Project } from "@/types/project";
+import type { RemoteStatus } from "@/types/update";
 
 // ============================================================================
 // CONSTANTS
@@ -26,13 +27,6 @@ interface GitHubRepo {
   name: string;
   html_url: string;
   default_branch: string;
-}
-
-interface RemoteStatus {
-  upToDate: boolean;
-  currentCommit: string;
-  remoteCommit: string;
-  commitsBehind: number;
 }
 
 interface UpdateStep {

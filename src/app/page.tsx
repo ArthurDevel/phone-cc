@@ -10,9 +10,11 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { useSession } from "@/contexts/session-context";
 import { Sidebar } from "@/components/sidebar";
 import { ChatView } from "@/components/chat-view";
+import { useUpdateCheck } from "@/hooks/useUpdateCheck";
 import type { PullRequest } from "@/types/pr";
 
 // ============================================================================
@@ -75,6 +77,7 @@ function usePrBadge(sessionId: string | null) {
 export default function Home() {
   const { activeSession, activeSessionId, statusMap, setSidebarOpen } = useSession();
   const pr = usePrBadge(activeSessionId);
+  const updateCheck = useUpdateCheck();
   const sendingRef = useRef(false);
   const [offline, setOffline] = useState(false);
 
@@ -110,7 +113,24 @@ export default function Home() {
   );
 
   return (
-    <div className="flex flex-col md:flex-row h-full">
+    <div className="flex flex-col h-full">
+      {/* Update available banner -- above everything */}
+      {updateCheck && (
+        <div className="relative px-4 py-2 text-xs text-center shrink-0 bg-accent/20 text-accent">
+          <Link href="/settings" className="underline hover:no-underline">
+            Update available ({updateCheck.commitsBehind} commits behind)
+          </Link>
+          <button
+            onClick={updateCheck.dismiss}
+            className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded hover:bg-accent/20"
+            aria-label="Dismiss update banner"
+          >
+            <DismissIcon />
+          </button>
+        </div>
+      )}
+
+      <div className="flex flex-col md:flex-row flex-1 min-h-0">
       <Sidebar />
 
       <div className="flex flex-col flex-1 min-w-0 min-h-0">
@@ -184,6 +204,7 @@ export default function Home() {
 
       <ChatView />
       </div>
+      </div>
     </div>
   );
 }
@@ -239,6 +260,15 @@ function PrIcon() {
       <circle cx="18" cy="18" r="3" />
       <circle cx="6" cy="6" r="3" />
       <path d="M6 21V9a9 9 0 0 0 9 9" />
+    </svg>
+  );
+}
+
+function DismissIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="18" y1="6" x2="6" y2="18" />
+      <line x1="6" y1="6" x2="18" y2="18" />
     </svg>
   );
 }

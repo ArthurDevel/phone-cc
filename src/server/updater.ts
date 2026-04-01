@@ -202,12 +202,12 @@ function runCommand(cmd: string, args: string[], timeoutMs?: number): Promise<Co
 }
 
 /**
- * Detects the current git branch name.
- * @returns the current branch name (e.g. "main")
+ * Returns the branch to check for updates against.
+ * Always checks against main, regardless of which branch is currently checked out.
+ * @returns "main"
  */
-async function detectBranch(): Promise<string> {
-  const { stdout } = await runCommand("git", ["rev-parse", "--abbrev-ref", "HEAD"]);
-  return stdout.trim();
+function detectBranch(): string {
+  return "main";
 }
 
 /**
