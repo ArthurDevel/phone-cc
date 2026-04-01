@@ -33,6 +33,14 @@ async function getDeepgramWsUrl(): Promise<string> {
 }
 const PR_URL_PATTERN = /https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+/;
 
+/** Resolves relative /preview/ paths to full URLs using the current origin */
+function resolvePreviewUrls(content: string): string {
+  return content.replace(
+    /\/preview\/([a-f0-9-]{36})(\/[^\s)"'>]*)?/g,
+    `${window.location.origin}/preview/$1$2`
+  );
+}
+
 // ============================================================================
 // EVENT HANDLERS / HOOKS
 // ============================================================================
@@ -84,7 +92,14 @@ function useChatStream(
     fetch(`/api/sessions/${sessionId}/history`)
       .then((res) => (res.ok ? res.json() : { messages: [] }))
       .then((data) => {
-        if (!cancelled) setMessages(data.messages || []);
+        if (!cancelled) {
+          const msgs = (data.messages || []).map((m: Message) =>
+            m.role === "assistant" && m.content
+              ? { ...m, content: resolvePreviewUrls(m.content) }
+              : m
+          );
+          setMessages(msgs);
+        }
       })
       .catch(() => {
         if (!cancelled) setMessages([]);
@@ -115,7 +130,14 @@ function useChatStream(
         fetch(`/api/sessions/${sessionId}/history`)
           .then((res) => (res.ok ? res.json() : null))
           .then((data) => {
-            if (!cancelled && data?.messages) setMessages(data.messages);
+            if (!cancelled && data?.messages) {
+              const msgs = data.messages.map((m: Message) =>
+                m.role === "assistant" && m.content
+                  ? { ...m, content: resolvePreviewUrls(m.content) }
+                  : m
+              );
+              setMessages(msgs);
+            }
           })
           .catch(() => {});
 
@@ -208,8 +230,23 @@ function useChatStream(
         });
       });
 
-      es.addEventListener("message_end", () => {
+      es.addEventListener("message_end", (e) => {
         if (cancelled) return;
+        // Replace streamed content with the final rewritten version (preview URLs)
+        const data = JSON.parse(e.data);
+        console.log("[message_end] received data:", JSON.stringify(data).slice(0, 300));
+        console.log("[message_end] data.content is null?", data.content == null, "type:", typeof data.content);
+        if (data.content != null) {
+          const resolved = resolvePreviewUrls(data.content);
+          setMessages((prev) => {
+            const updated = [...prev];
+            const last = updated[updated.length - 1];
+            if (last && last.role === "assistant") {
+              updated[updated.length - 1] = { ...last, content: resolved };
+            }
+            return updated;
+          });
+        }
         setStatus("idle");
         if (sessionId && onStatusChange) onStatusChange(sessionId, "idle");
       });

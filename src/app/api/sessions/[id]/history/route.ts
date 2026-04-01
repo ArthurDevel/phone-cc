@@ -7,6 +7,7 @@
  */
 
 import { getMessageHistory, reconnectSession } from "@/lib/session-manager";
+import { rewriteAgentOutput } from "@/lib/preview-manager";
 
 // ============================================================================
 // ENDPOINT
@@ -39,6 +40,14 @@ export async function GET(
     return Response.json({ error: "Session not found" }, { status: 404 });
   }
 
-  console.log("[history] returning", messages.length, "messages");
-  return Response.json({ messages });
+  // Rewrite localhost URLs to preview URLs in assistant messages
+  const rewrittenMessages = messages.map((msg) => {
+    if (msg.role === "assistant" && msg.content) {
+      return { ...msg, content: rewriteAgentOutput(id, msg.content) };
+    }
+    return msg;
+  });
+
+  console.log("[history] returning", rewrittenMessages.length, "messages");
+  return Response.json({ messages: rewrittenMessages });
 }
