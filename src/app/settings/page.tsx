@@ -63,6 +63,10 @@ export default function SettingsPage() {
   const [search, setSearch] = useState("");
   const [submitting, setSubmitting] = useState<string | null>(null);
 
+  // App settings
+  const [enableCloudMcp, setEnableCloudMcp] = useState(false);
+  const [settingsLoading, setSettingsLoading] = useState(true);
+
   // System update
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>("idle");
   const [updateInfo, setUpdateInfo] = useState<RemoteStatus | null>(null);
@@ -75,7 +79,24 @@ export default function SettingsPage() {
       .then((res) => res.json())
       .then((data) => setProjects(data.projects))
       .finally(() => setLoading(false));
+
+    fetch("/api/settings")
+      .then((res) => res.json())
+      .then((data) => {
+        setEnableCloudMcp(data.enableCloudMcpServers ?? false);
+      })
+      .finally(() => setSettingsLoading(false));
   }, []);
+
+  async function toggleCloudMcp() {
+    const newValue = !enableCloudMcp;
+    setEnableCloudMcp(newValue);
+    await fetch("/api/settings", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enableCloudMcpServers: newValue }),
+    });
+  }
 
   async function fetchRepos() {
     setReposLoading(true);
@@ -294,6 +315,46 @@ export default function SettingsPage() {
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-4">
+        {/* Agent Settings */}
+        <h2 className="text-xs uppercase tracking-wider text-muted mb-3">
+          Agent
+        </h2>
+
+        <div className="bg-surface rounded-lg p-3 mb-6">
+          <label className="flex items-center justify-between cursor-pointer">
+            <div>
+              <div className="text-sm font-medium">
+                Enable{" "}
+                <a
+                  href="https://claude.ai/integrations"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-accent hover:underline"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  claude.ai integrations
+                </a>
+              </div>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={enableCloudMcp}
+              disabled={settingsLoading}
+              onClick={toggleCloudMcp}
+              className={`relative inline-flex h-6 w-11 shrink-0 rounded-full transition-colors duration-200 ${
+                enableCloudMcp ? "bg-accent" : "bg-border"
+              } ${settingsLoading ? "opacity-50 cursor-not-allowed" : ""}`}
+            >
+              <span
+                className={`inline-block h-5 w-5 rounded-full bg-white shadow-sm transform transition-transform duration-200 mt-0.5 ${
+                  enableCloudMcp ? "translate-x-[22px]" : "translate-x-0.5"
+                }`}
+              />
+            </button>
+          </label>
+        </div>
+
         {/* Linked Projects */}
         <h2 className="text-xs uppercase tracking-wider text-muted mb-3">
           Linked Projects
