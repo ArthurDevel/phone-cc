@@ -6,6 +6,7 @@ import { promisify } from "util";
 import { EventEmitter } from "events";
 import { query, type Query } from "@anthropic-ai/claude-agent-sdk";
 import { readProjects } from "@/lib/projects";
+import { readSettings } from "@/lib/settings";
 import { CITIES } from "@/lib/cities";
 import type { Session, SessionMetadata } from "@/types/session";
 import type { Message, ToolUse } from "@/types/message";
@@ -314,6 +315,8 @@ export async function sendMessage(sessionId: string, text: string): Promise<void
   const abortController = new AbortController();
   entry.currentAbort = abortController;
 
+  const settings = await readSettings();
+
   const q = query({
     prompt: text,
     options: {
@@ -323,6 +326,9 @@ export async function sendMessage(sessionId: string, text: string): Promise<void
       allowDangerouslySkipPermissions: true,
       resume: entry.sdkSessionId || undefined,
       includePartialMessages: true,
+      env: settings.enableCloudMcpServers
+        ? undefined
+        : { ...process.env, ENABLE_CLAUDEAI_MCP_SERVERS: "false" },
     },
   });
   entry.currentQuery = q;
