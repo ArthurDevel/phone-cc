@@ -1,27 +1,20 @@
 /**
- * Tests for the cookie-based preview proxy rewrite system.
+ * Tests for the path-based preview proxy with Service Worker injection.
  *
  * Covers:
- * - proxy.ts: rewrite behavior with preview cookies, auth fallthrough, SSRF prevention
- * - isPortSafe: port validation logic
- * - handlePreviewRewrite: rewrite response construction
- * - Route handler (route.ts): token validation, cookie setting, redirects
- * - Exit route (exit/route.ts): cookie clearing and redirect
+ * - proxy.ts: auth-only behavior (no preview logic)
+ * - Route handler: token lookup, SSRF prevention, upstream proxying,
+ *   HTML rewriting, SW script serving, passthrough for non-HTML
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
-import {
-  isRewrite,
-  getRewrittenUrl,
-  getRedirectUrl,
-} from "next/experimental/testing/server";
+import { getRedirectUrl } from "next/experimental/testing/server";
 
 // ============================================================================
 // MOCKS
 // ============================================================================
 
-// Mock @/lib/auth so proxy() can call validateToken without real token logic
 vi.mock("@/lib/auth", () => ({
   getOrCreateToken: vi.fn(),
   validateToken: vi.fn().mockResolvedValue(false),
@@ -29,41 +22,20 @@ vi.mock("@/lib/auth", () => ({
   COOKIE_MAX_AGE: 86400,
 }));
 
-// Mock @/lib/preview-manager for route handler tests
 vi.mock("@/lib/preview-manager", () => ({
   lookupToken: vi.fn(),
-  PREVIEW_COOKIE_NAME: "phonecc_preview",
 }));
 
-// Mock next/headers for route handler tests
-const mockCookieSet = vi.fn();
-vi.mock("next/headers", () => ({
-  cookies: vi.fn().mockResolvedValue({
-    set: mockCookieSet,
-  }),
-}));
-
-// Mock next/navigation -- redirect() throws like in real Next.js
-const redirectError = new Error("NEXT_REDIRECT");
-vi.mock("next/navigation", () => ({
-  redirect: vi.fn().mockImplementation(() => {
-    throw redirectError;
-  }),
-}));
+// Mock global fetch for upstream proxy tests
+const mockFetch = vi.fn();
+vi.stubGlobal("fetch", mockFetch);
 
 // ============================================================================
 // IMPORTS (after mocks)
 // ============================================================================
 
-import {
-  proxy,
-  config,
-  isPortSafe,
-  handlePreviewRewrite,
-  PREVIEW_COOKIE_NAME,
-} from "@/proxy";
+import { proxy, config } from "@/proxy";
 import { lookupToken } from "@/lib/preview-manager";
-import { redirect } from "next/navigation";
 
 // ============================================================================
 // SETUP
@@ -71,165 +43,34 @@ import { redirect } from "next/navigation";
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockCookieSet.mockClear();
 });
 
 // ============================================================================
-// TESTS: proxy() -- PREVIEW REWRITE BEHAVIOR
+// TESTS: proxy() -- AUTH ONLY
 // ============================================================================
 
-describe("proxy() -- preview rewrite behavior", () => {
-  it("rewrites to localhost:{port} when preview cookie is set with a valid port", async () => {
-    const request = new NextRequest("http://localhost:3000/some/path?q=1", {
-      headers: { cookie: "phonecc_preview=3002" },
-    });
-
-    const response = await proxy(request);
-
-    expect(isRewrite(response)).toBe(true);
-    expect(getRewrittenUrl(response)).toBe(
-      "http://localhost:3002/some/path?q=1"
-    );
-  });
-
-  it("does NOT redirect to /login when preview cookie is set (bypasses auth)", async () => {
-    const request = new NextRequest("http://localhost:3000/dashboard", {
-      headers: { cookie: "phonecc_preview=3002" },
-    });
-
-    const response = await proxy(request);
-
-    // Should rewrite, not redirect
-    expect(isRewrite(response)).toBe(true);
-    expect(getRedirectUrl(response)).toBeNull();
-  });
-
-  it("falls through to auth logic when NO preview cookie is set", async () => {
+describe("proxy() -- auth only", () => {
+  it("redirects unauthenticated page requests to /login", async () => {
     const request = new NextRequest("http://localhost:3000/dashboard");
-
     const response = await proxy(request);
-
-    // No auth cookie either, so should redirect to /login
-    expect(isRewrite(response)).toBe(false);
-    const redirectUrl = getRedirectUrl(response);
-    expect(redirectUrl).toContain("/login");
+    expect(getRedirectUrl(response)).toContain("/login");
   });
 
-  it("SSRF: cookie with port 22 (< 1024) does NOT trigger a rewrite", async () => {
-    const request = new NextRequest("http://localhost:3000/page", {
-      headers: { cookie: "phonecc_preview=22" },
-    });
-
+  it("returns 401 for unauthenticated API requests", async () => {
+    const request = new NextRequest("http://localhost:3000/api/something");
     const response = await proxy(request);
-
-    expect(isRewrite(response)).toBe(false);
-  });
-
-  it("SSRF: cookie with port 3000 (APP_PORT) does NOT trigger a rewrite", async () => {
-    const request = new NextRequest("http://localhost:3000/page", {
-      headers: { cookie: "phonecc_preview=3000" },
-    });
-
-    const response = await proxy(request);
-
-    expect(isRewrite(response)).toBe(false);
-  });
-
-  it("SSRF: cookie with port 99999 (> 65535) does NOT trigger a rewrite", async () => {
-    const request = new NextRequest("http://localhost:3000/page", {
-      headers: { cookie: "phonecc_preview=99999" },
-    });
-
-    const response = await proxy(request);
-
-    expect(isRewrite(response)).toBe(false);
-  });
-
-  it("SSRF: cookie with non-numeric value does NOT trigger a rewrite", async () => {
-    const request = new NextRequest("http://localhost:3000/page", {
-      headers: { cookie: "phonecc_preview=abc" },
-    });
-
-    const response = await proxy(request);
-
-    expect(isRewrite(response)).toBe(false);
-  });
-
-  it("exempts /preview/* paths from rewrite even when preview cookie is set", async () => {
-    const request = new NextRequest(
-      "http://localhost:3000/preview/some-token",
-      {
-        headers: { cookie: "phonecc_preview=3002" },
-      }
-    );
-
-    const response = await proxy(request);
-
-    // Should NOT rewrite -- falls through to auth logic
-    expect(isRewrite(response)).toBe(false);
+    expect(response.status).toBe(401);
   });
 });
 
 // ============================================================================
-// TESTS: isPortSafe()
+// TESTS: config.matcher
 // ============================================================================
 
-describe("isPortSafe()", () => {
-  it("returns true for valid ports (3002, 8080)", () => {
-    expect(isPortSafe(3002)).toBe(true);
-    expect(isPortSafe(8080)).toBe(true);
-  });
-
-  it("returns false for port < 1024", () => {
-    expect(isPortSafe(80)).toBe(false);
-    expect(isPortSafe(443)).toBe(false);
-    expect(isPortSafe(1023)).toBe(false);
-  });
-
-  it("returns false for port 3000 (APP_PORT)", () => {
-    expect(isPortSafe(3000)).toBe(false);
-  });
-
-  it("returns false for port > 65535", () => {
-    expect(isPortSafe(65536)).toBe(false);
-    expect(isPortSafe(99999)).toBe(false);
-  });
-
-  it("returns false for NaN", () => {
-    expect(isPortSafe(NaN)).toBe(false);
-  });
-});
-
-// ============================================================================
-// TESTS: handlePreviewRewrite()
-// ============================================================================
-
-describe("handlePreviewRewrite()", () => {
-  it("returns a rewrite response for a safe port", () => {
-    const request = new NextRequest("http://localhost:3000/hello?x=1");
-
-    const response = handlePreviewRewrite(request, 3002);
-
-    expect(response).not.toBeNull();
-    expect(isRewrite(response!)).toBe(true);
-    expect(getRewrittenUrl(response!)).toBe("http://localhost:3002/hello?x=1");
-  });
-
-  it("returns null for an unsafe port", () => {
-    const request = new NextRequest("http://localhost:3000/hello");
-
-    expect(handlePreviewRewrite(request, 22)).toBeNull();
-    expect(handlePreviewRewrite(request, 3000)).toBeNull();
-    expect(handlePreviewRewrite(request, 99999)).toBeNull();
-  });
-
-  it("sets x-phonecc-preview response header", () => {
-    const request = new NextRequest("http://localhost:3000/page");
-
-    const response = handlePreviewRewrite(request, 4000);
-
-    expect(response).not.toBeNull();
-    expect(response!.headers.get("x-phonecc-preview")).toBe("4000");
+describe("config.matcher", () => {
+  it("excludes /preview/ paths from auth", () => {
+    const pattern = config.matcher[0] as string;
+    expect(pattern).toContain("preview/");
   });
 });
 
@@ -237,121 +78,263 @@ describe("handlePreviewRewrite()", () => {
 // TESTS: ROUTE HANDLER (preview/[token]/[[...path]]/route.ts)
 // ============================================================================
 
-describe("preview route handler (GET)", () => {
-  // We need to dynamically import the route handler so mocks are in place
+describe("preview route handler", () => {
   let GET: typeof import("@/app/preview/[token]/[[...path]]/route").GET;
+  let POST: typeof import("@/app/preview/[token]/[[...path]]/route").POST;
 
   beforeEach(async () => {
     vi.clearAllMocks();
-    mockCookieSet.mockClear();
-
-    // Re-import to get fresh module with mocks applied
     const mod = await import("@/app/preview/[token]/[[...path]]/route");
     GET = mod.GET;
+    POST = mod.POST;
   });
 
-  it("sets cookie and redirects to '/' for a valid token", async () => {
-    const mockedLookup = vi.mocked(lookupToken);
-    mockedLookup.mockReturnValue({
-      token: "abc-123",
-      port: 3002,
-      sessionId: "s1",
-      createdAt: new Date(),
-    });
-
-    const request = new Request("http://localhost:3000/preview/abc-123");
-    const ctx = { params: Promise.resolve({ token: "abc-123", path: undefined }) };
-
-    await expect(GET(request, ctx as any)).rejects.toThrow(redirectError);
-
-    // Should have set the preview cookie with the port
-    expect(mockCookieSet).toHaveBeenCalledWith(
-      "phonecc_preview",
-      "3002",
-      expect.objectContaining({ maxAge: 14400, httpOnly: true, path: "/" })
-    );
-
-    // Should have called redirect("/")
-    expect(redirect).toHaveBeenCalledWith("/");
-  });
-
-  it("returns 404 for an invalid token", async () => {
-    const mockedLookup = vi.mocked(lookupToken);
-    mockedLookup.mockReturnValue(undefined);
+  it("returns 404 for an unknown token", async () => {
+    vi.mocked(lookupToken).mockReturnValue(undefined);
 
     const request = new Request("http://localhost:3000/preview/bad-token");
     const ctx = { params: Promise.resolve({ token: "bad-token", path: undefined }) };
-
     const response = await GET(request, ctx as any);
 
     expect(response.status).toBe(404);
-    const body = await response.json();
-    expect(body.error).toBe("Not found");
   });
 
-  it("SSRF: token pointing to port 3000 returns 404", async () => {
-    const mockedLookup = vi.mocked(lookupToken);
-    mockedLookup.mockReturnValue({
-      token: "ssrf-token",
-      port: 3000,
-      sessionId: "s1",
-      createdAt: new Date(),
+  it("returns 404 for SSRF: port < 1024", async () => {
+    vi.mocked(lookupToken).mockReturnValue({
+      token: "t1", port: 22, sessionId: "s1", createdAt: new Date(),
     });
 
-    const request = new Request("http://localhost:3000/preview/ssrf-token");
-    const ctx = { params: Promise.resolve({ token: "ssrf-token", path: undefined }) };
-
+    const request = new Request("http://localhost:3000/preview/t1");
+    const ctx = { params: Promise.resolve({ token: "t1", path: undefined }) };
     const response = await GET(request, ctx as any);
 
     expect(response.status).toBe(404);
   });
 
-  it("SSRF: token pointing to port < 1024 returns 404", async () => {
-    const mockedLookup = vi.mocked(lookupToken);
-    mockedLookup.mockReturnValue({
-      token: "low-port",
-      port: 22,
-      sessionId: "s1",
-      createdAt: new Date(),
+  it("returns 404 for SSRF: port === APP_PORT (3000)", async () => {
+    vi.mocked(lookupToken).mockReturnValue({
+      token: "t1", port: 3000, sessionId: "s1", createdAt: new Date(),
     });
 
-    const request = new Request("http://localhost:3000/preview/low-port");
-    const ctx = { params: Promise.resolve({ token: "low-port", path: undefined }) };
-
+    const request = new Request("http://localhost:3000/preview/t1");
+    const ctx = { params: Promise.resolve({ token: "t1", path: undefined }) };
     const response = await GET(request, ctx as any);
 
     expect(response.status).toBe(404);
   });
-});
 
-// ============================================================================
-// TESTS: EXIT ROUTE (preview/exit/route.ts)
-// ============================================================================
+  it("proxies to upstream and returns the response", async () => {
+    vi.mocked(lookupToken).mockReturnValue({
+      token: "abc-123", port: 3002, sessionId: "s1", createdAt: new Date(),
+    });
 
-describe("exit route handler (GET)", () => {
-  let exitGET: typeof import("@/app/preview/exit/route").GET;
+    mockFetch.mockResolvedValue(new Response("Hello from upstream", {
+      status: 200,
+      headers: { "content-type": "text/plain" },
+    }));
 
-  beforeEach(async () => {
-    vi.clearAllMocks();
-    mockCookieSet.mockClear();
+    const request = new Request("http://localhost:3000/preview/abc-123/page");
+    const ctx = { params: Promise.resolve({ token: "abc-123", path: ["page"] }) };
+    const response = await GET(request, ctx as any);
 
-    const mod = await import("@/app/preview/exit/route");
-    exitGET = mod.GET;
-  });
-
-  it("clears the cookie (maxAge 0) and redirects to '/'", async () => {
-    const request = new Request("http://localhost:3000/preview/exit");
-
-    await expect(exitGET(request)).rejects.toThrow(redirectError);
-
-    // Should clear the cookie by setting maxAge to 0
-    expect(mockCookieSet).toHaveBeenCalledWith(
-      "phonecc_preview",
-      "",
-      expect.objectContaining({ maxAge: 0, httpOnly: true, path: "/" })
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("Hello from upstream");
+    expect(mockFetch).toHaveBeenCalledWith(
+      "http://localhost:3002/page",
+      expect.objectContaining({ method: "GET" }),
     );
+  });
 
-    // Should redirect to "/"
-    expect(redirect).toHaveBeenCalledWith("/");
+  it("proxies root path when no path segments", async () => {
+    vi.mocked(lookupToken).mockReturnValue({
+      token: "abc-123", port: 3002, sessionId: "s1", createdAt: new Date(),
+    });
+
+    mockFetch.mockResolvedValue(new Response("root", {
+      status: 200,
+      headers: { "content-type": "text/plain" },
+    }));
+
+    const request = new Request("http://localhost:3000/preview/abc-123");
+    const ctx = { params: Promise.resolve({ token: "abc-123", path: undefined }) };
+    await GET(request, ctx as any);
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      "http://localhost:3002/",
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
+
+  it("returns 502 when upstream is unreachable", async () => {
+    vi.mocked(lookupToken).mockReturnValue({
+      token: "abc-123", port: 3002, sessionId: "s1", createdAt: new Date(),
+    });
+
+    mockFetch.mockRejectedValue(new Error("ECONNREFUSED"));
+
+    const request = new Request("http://localhost:3000/preview/abc-123");
+    const ctx = { params: Promise.resolve({ token: "abc-123", path: undefined }) };
+    const response = await GET(request, ctx as any);
+
+    expect(response.status).toBe(502);
+  });
+
+  it("rewrites absolute paths in HTML responses", async () => {
+    vi.mocked(lookupToken).mockReturnValue({
+      token: "abc-123", port: 3002, sessionId: "s1", createdAt: new Date(),
+    });
+
+    const html = '<html><head></head><body><a href="/about">About</a><img src="/logo.png"></body></html>';
+    mockFetch.mockResolvedValue(new Response(html, {
+      status: 200,
+      headers: { "content-type": "text/html" },
+    }));
+
+    const request = new Request("http://localhost:3000/preview/abc-123");
+    const ctx = { params: Promise.resolve({ token: "abc-123", path: undefined }) };
+    const response = await GET(request, ctx as any);
+
+    const body = await response.text();
+    expect(body).toContain('href="/preview/abc-123/about"');
+    expect(body).toContain('src="/preview/abc-123/logo.png"');
+  });
+
+  it("injects Service Worker registration script into HTML", async () => {
+    vi.mocked(lookupToken).mockReturnValue({
+      token: "abc-123", port: 3002, sessionId: "s1", createdAt: new Date(),
+    });
+
+    const html = "<html><head></head><body>Hello</body></html>";
+    mockFetch.mockResolvedValue(new Response(html, {
+      status: 200,
+      headers: { "content-type": "text/html" },
+    }));
+
+    const request = new Request("http://localhost:3000/preview/abc-123");
+    const ctx = { params: Promise.resolve({ token: "abc-123", path: undefined }) };
+    const response = await GET(request, ctx as any);
+
+    const body = await response.text();
+    expect(body).toContain("serviceWorker");
+    expect(body).toContain("__preview-sw.js");
+    expect(body).toContain("/preview/abc-123/");
+  });
+
+  it("serves the Service Worker script at __preview-sw.js", async () => {
+    vi.mocked(lookupToken).mockReturnValue({
+      token: "abc-123", port: 3002, sessionId: "s1", createdAt: new Date(),
+    });
+
+    const request = new Request("http://localhost:3000/preview/abc-123/__preview-sw.js");
+    const ctx = { params: Promise.resolve({ token: "abc-123", path: ["__preview-sw.js"] }) };
+    const response = await GET(request, ctx as any);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("javascript");
+    const body = await response.text();
+    expect(body).toContain('/preview/abc-123');
+    expect(body).toContain("self.addEventListener");
+    // Should NOT have called upstream fetch
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("passes JS responses through unmodified", async () => {
+    vi.mocked(lookupToken).mockReturnValue({
+      token: "abc-123", port: 3002, sessionId: "s1", createdAt: new Date(),
+    });
+
+    const js = 'fetch("/_next/data/build/page.json")';
+    mockFetch.mockResolvedValue(new Response(js, {
+      status: 200,
+      headers: { "content-type": "application/javascript" },
+    }));
+
+    const request = new Request("http://localhost:3000/preview/abc-123/_next/chunk.js");
+    const ctx = { params: Promise.resolve({ token: "abc-123", path: ["_next", "chunk.js"] }) };
+    const response = await GET(request, ctx as any);
+
+    // JS should NOT be rewritten — the SW handles runtime path interception
+    expect(await response.text()).toBe(js);
+  });
+
+  it("passes JSON responses through unmodified", async () => {
+    vi.mocked(lookupToken).mockReturnValue({
+      token: "abc-123", port: 3002, sessionId: "s1", createdAt: new Date(),
+    });
+
+    const json = '{"href":"/about"}';
+    mockFetch.mockResolvedValue(new Response(json, {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }));
+
+    const request = new Request("http://localhost:3000/preview/abc-123");
+    const ctx = { params: Promise.resolve({ token: "abc-123", path: undefined }) };
+    const response = await GET(request, ctx as any);
+
+    expect(await response.text()).toBe(json);
+  });
+
+  it("rewrites Location header on redirects", async () => {
+    vi.mocked(lookupToken).mockReturnValue({
+      token: "abc-123", port: 3002, sessionId: "s1", createdAt: new Date(),
+    });
+
+    mockFetch.mockResolvedValue(new Response(null, {
+      status: 302,
+      headers: { location: "/login" },
+    }));
+
+    const request = new Request("http://localhost:3000/preview/abc-123");
+    const ctx = { params: Promise.resolve({ token: "abc-123", path: undefined }) };
+    const response = await GET(request, ctx as any);
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe("/preview/abc-123/login");
+  });
+
+  it("forwards POST requests with body", async () => {
+    vi.mocked(lookupToken).mockReturnValue({
+      token: "abc-123", port: 3002, sessionId: "s1", createdAt: new Date(),
+    });
+
+    mockFetch.mockResolvedValue(new Response('{"ok":true}', {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }));
+
+    const request = new Request("http://localhost:3000/preview/abc-123/api/data", {
+      method: "POST",
+      body: JSON.stringify({ name: "test" }),
+    });
+    const ctx = { params: Promise.resolve({ token: "abc-123", path: ["api", "data"] }) };
+    const response = await POST(request, ctx as any);
+
+    expect(response.status).toBe(200);
+    expect(mockFetch).toHaveBeenCalledWith(
+      "http://localhost:3002/api/data",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("renders error page for upstream 500s", async () => {
+    vi.mocked(lookupToken).mockReturnValue({
+      token: "abc-123", port: 3002, sessionId: "s1", createdAt: new Date(),
+    });
+
+    const html = '<html><script id="__NEXT_DATA__" type="application/json">{"err":{"message":"Supabase config missing","stack":"Error: Supabase config missing\\n    at init"}}</script></html>';
+    mockFetch.mockResolvedValue(new Response(html, {
+      status: 500,
+      headers: { "content-type": "text/html" },
+    }));
+
+    const request = new Request("http://localhost:3000/preview/abc-123");
+    const ctx = { params: Promise.resolve({ token: "abc-123", path: undefined }) };
+    const response = await GET(request, ctx as any);
+
+    expect(response.status).toBe(500);
+    const body = await response.text();
+    expect(body).toContain("Supabase config missing");
+    expect(body).toContain("localhost:3002");
   });
 });

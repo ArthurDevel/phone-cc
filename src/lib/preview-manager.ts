@@ -13,9 +13,6 @@
 // CONSTANTS
 // ============================================================================
 
-/** Cookie name used to identify the active preview port. */
-export const PREVIEW_COOKIE_NAME = "phonecc_preview";
-
 /**
  * Matches localhost-style URLs with a 4-5 digit port and an optional path.
  * Captures: group 1 = port, group 2 = path (including leading slash) or undefined.
