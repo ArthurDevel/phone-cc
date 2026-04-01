@@ -1,14 +1,54 @@
 "use client";
 
-import { useEffect, useState } from "react";
+/**
+ * Settings page for PhoneCC.
+ *
+ * - Manage linked GitHub projects (add/remove)
+ * - Check for and apply system updates via the updater service
+ */
+
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { Project } from "@/types/project";
+
+// ============================================================================
+// CONSTANTS
+// ============================================================================
+
+const POLL_INTERVAL_MS = 2000;
+const POLL_TIMEOUT_MS = 120_000;
+
+// ============================================================================
+// TYPES
+// ============================================================================
 
 interface GitHubRepo {
   name: string;
   html_url: string;
   default_branch: string;
 }
+
+interface RemoteStatus {
+  upToDate: boolean;
+  currentCommit: string;
+  remoteCommit: string;
+  commitsBehind: number;
+}
+
+interface UpdateStep {
+  step: string;
+  status: string;
+  message: string;
+}
+
+type UpdateStatus =
+  | "idle"
+  | "checking"
+  | "up-to-date"
+  | "update-available"
+  | "updating"
+  | "restarting"
+  | "error";
 
 export default function SettingsPage() {
   const router = useRouter();
@@ -26,6 +66,13 @@ export default function SettingsPage() {
   // App settings
   const [enableCloudMcp, setEnableCloudMcp] = useState(false);
   const [settingsLoading, setSettingsLoading] = useState(true);
+
+  // System update
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus>("idle");
+  const [updateInfo, setUpdateInfo] = useState<RemoteStatus | null>(null);
+  const [updateLog, setUpdateLog] = useState<UpdateStep[]>([]);
+  const [updateError, setUpdateError] = useState<string | null>(null);
+  const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     fetch("/api/projects")
@@ -97,6 +144,148 @@ export default function SettingsPage() {
     if (res.ok) {
       setProjects((prev) => prev.filter((p) => p.id !== id));
     }
+  }
+
+  // ============================================================================
+  // UPDATE HANDLERS
+  // ============================================================================
+
+  /**
+   * Check whether a newer version is available by calling GET /api/update.
+   * Sets updateStatus to "up-to-date" or "update-available".
+   * A 409 means an update is already running.
+   */
+  async function handleCheckUpdate(): Promise<void> {
+    setUpdateStatus("checking");
+    setUpdateError(null);
+    setUpdateInfo(null);
+    setUpdateLog([]);
+
+    try {
+      const res = await fetch("/api/update");
+
+      if (res.status === 409) {
+        setUpdateStatus("updating");
+        return;
+      }
+
+      if (!res.ok) {
+        throw new Error(`Server returned ${res.status}`);
+      }
+
+      const data: RemoteStatus = await res.json();
+      setUpdateInfo(data);
+      setUpdateStatus(data.upToDate ? "up-to-date" : "update-available");
+    } catch (err) {
+      setUpdateError(err instanceof Error ? err.message : "Failed to check for updates");
+      setUpdateStatus("error");
+    }
+  }
+
+  /**
+   * Trigger the update by calling POST /api/update.
+   * Reads the NDJSON stream line by line to populate updateLog.
+   * When the stream ends, switches to "restarting" and starts polling.
+   */
+  async function handleStartUpdate(): Promise<void> {
+    setUpdateStatus("updating");
+    setUpdateError(null);
+    setUpdateLog([]);
+
+    try {
+      const res = await fetch("/api/update", { method: "POST" });
+
+      if (res.status === 409) {
+        setUpdateError("An update is already in progress");
+        setUpdateStatus("error");
+        return;
+      }
+
+      if (!res.ok) {
+        throw new Error(`Server returned ${res.status}`);
+      }
+
+      const reader = res.body?.getReader();
+      if (!reader) throw new Error("No response body");
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let hadError = false;
+
+      // Read NDJSON stream line by line
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const step: UpdateStep = JSON.parse(line);
+          setUpdateLog((prev) => {
+            // Replace existing entry for same step, or append
+            const idx = prev.findIndex((s) => s.step === step.step);
+            if (idx >= 0) {
+              const updated = [...prev];
+              updated[idx] = step;
+              return updated;
+            }
+            return [...prev, step];
+          });
+
+          if (step.status === "error") {
+            hadError = true;
+          }
+        }
+      }
+
+      if (hadError) {
+        setUpdateError("Update failed -- check the log above");
+        setUpdateStatus("error");
+        return;
+      }
+
+      // Stream ended normally -- server is restarting
+      setUpdateStatus("restarting");
+      pollUntilBack();
+    } catch {
+      // Connection dropped -- expected when the server restarts
+      setUpdateStatus("restarting");
+      pollUntilBack();
+    }
+  }
+
+  /**
+   * Poll GET /api/update every 2s until the server responds.
+   * On success, reloads the page. After 120s, shows an error.
+   */
+  function pollUntilBack(): void {
+    const startTime = Date.now();
+
+    // Clear any existing poll timer
+    if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+
+    pollTimerRef.current = setInterval(async () => {
+      // Timeout after 120 seconds
+      if (Date.now() - startTime > POLL_TIMEOUT_MS) {
+        if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+        setUpdateError("Server did not come back. SSH in to investigate.");
+        setUpdateStatus("error");
+        return;
+      }
+
+      try {
+        const res = await fetch("/api/update");
+        if (res.ok) {
+          if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+          window.location.reload();
+        }
+      } catch {
+        // Server still down -- keep polling
+      }
+    }, POLL_INTERVAL_MS);
   }
 
   // Filter repos: exclude already-linked ones and apply search
@@ -259,6 +448,133 @@ export default function SettingsPage() {
 
         {reposError && (
           <div className="text-danger text-sm mt-2">{reposError}</div>
+        )}
+
+        {/* System */}
+        <h2 className="text-xs uppercase tracking-wider text-muted mb-3 mt-6">
+          System
+        </h2>
+
+        {/* Idle -- show check button */}
+        {updateStatus === "idle" && (
+          <button
+            onClick={handleCheckUpdate}
+            className="w-full h-10 px-4 rounded-lg bg-surface hover:bg-surface-hover border border-border text-sm font-medium transition-colors"
+          >
+            Check for updates
+          </button>
+        )}
+
+        {/* Checking */}
+        {updateStatus === "checking" && (
+          <button
+            disabled
+            className="w-full h-10 px-4 rounded-lg bg-surface border border-border text-sm font-medium opacity-50 cursor-not-allowed"
+          >
+            Checking...
+          </button>
+        )}
+
+        {/* Up to date */}
+        {updateStatus === "up-to-date" && updateInfo && (
+          <div className="bg-surface rounded-lg p-3">
+            <div className="text-sm font-medium text-foreground">Up to date</div>
+            <div className="text-xs text-muted mt-1">
+              Current commit: {updateInfo.currentCommit.slice(0, 7)}
+            </div>
+            <button
+              onClick={handleCheckUpdate}
+              className="mt-2 text-xs text-accent hover:text-accent-hover"
+            >
+              Check again
+            </button>
+          </div>
+        )}
+
+        {/* Update available */}
+        {updateStatus === "update-available" && updateInfo && (
+          <div className="bg-surface rounded-lg p-3 space-y-2">
+            <div className="text-sm font-medium text-foreground">
+              Update available ({updateInfo.commitsBehind} commit{updateInfo.commitsBehind !== 1 ? "s" : ""} behind)
+            </div>
+            <div className="text-xs text-muted space-y-0.5">
+              <div>Current: {updateInfo.currentCommit.slice(0, 7)}</div>
+              <div>Remote: {updateInfo.remoteCommit.slice(0, 7)}</div>
+            </div>
+            <button
+              onClick={handleStartUpdate}
+              className="w-full h-10 px-4 rounded-lg bg-accent hover:bg-accent-hover text-white text-sm font-medium transition-colors"
+            >
+              Update now
+            </button>
+          </div>
+        )}
+
+        {/* Updating -- show log */}
+        {updateStatus === "updating" && (
+          <div className="bg-surface rounded-lg p-3 space-y-1.5">
+            <div className="text-sm font-medium text-foreground mb-2">Updating...</div>
+            {updateLog.map((entry) => (
+              <div key={entry.step} className="flex items-center gap-2 text-xs">
+                <span className={
+                  entry.status === "done"
+                    ? "text-accent"
+                    : entry.status === "error"
+                      ? "text-danger"
+                      : "text-muted"
+                }>
+                  {entry.status === "done" ? "done" : entry.status === "error" ? "fail" : "..."}
+                </span>
+                <span className="text-foreground">{entry.message}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Restarting */}
+        {updateStatus === "restarting" && (
+          <div className="bg-surface rounded-lg p-3">
+            <div className="text-sm font-medium text-foreground">Server is restarting...</div>
+            <div className="text-xs text-muted mt-1">
+              The page will reload automatically when the server is back.
+            </div>
+          </div>
+        )}
+
+        {/* Error */}
+        {updateStatus === "error" && (
+          <div className="bg-surface rounded-lg p-3 space-y-2">
+            {updateLog.length > 0 && (
+              <div className="space-y-1.5 mb-2">
+                {updateLog.map((entry) => (
+                  <div key={entry.step} className="flex items-center gap-2 text-xs">
+                    <span className={
+                      entry.status === "done"
+                        ? "text-accent"
+                        : entry.status === "error"
+                          ? "text-danger"
+                          : "text-muted"
+                    }>
+                      {entry.status === "done" ? "done" : entry.status === "error" ? "fail" : "..."}
+                    </span>
+                    <span className="text-foreground">{entry.message}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="text-danger text-sm">{updateError}</div>
+            <button
+              onClick={() => {
+                setUpdateStatus("idle");
+                setUpdateError(null);
+                setUpdateInfo(null);
+                setUpdateLog([]);
+              }}
+              className="w-full h-10 px-4 rounded-lg bg-surface hover:bg-surface-hover border border-border text-sm font-medium transition-colors"
+            >
+              Try again
+            </button>
+          </div>
         )}
       </div>
     </div>

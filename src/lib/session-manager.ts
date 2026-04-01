@@ -8,6 +8,7 @@ import { query, type Query } from "@anthropic-ai/claude-agent-sdk";
 import { readProjects } from "@/lib/projects";
 import { readSettings } from "@/lib/settings";
 import { CITIES } from "@/lib/cities";
+import { rewriteAgentOutput, cleanupSession as cleanupPreviewTokens } from "@/lib/preview-manager";
 import type { Session, SessionMetadata } from "@/types/session";
 import type { Message, ToolUse } from "@/types/message";
 
@@ -449,7 +450,17 @@ export async function sendMessage(sessionId: string, text: string): Promise<void
       }
 
       if (message.type === "result") {
-        entry.emitter.emit("sse", "message_end", {});
+        // Rewrite localhost URLs to preview URLs in the completed message
+        console.log("[sendMessage] message_end: currentAssistantMsg exists?", !!currentAssistantMsg);
+        if (currentAssistantMsg) {
+          console.log("[sendMessage] before rewrite, content snippet:", currentAssistantMsg.content.slice(0, 200));
+          currentAssistantMsg.content = rewriteAgentOutput(sessionId, currentAssistantMsg.content);
+          console.log("[sendMessage] after rewrite, content snippet:", currentAssistantMsg.content.slice(0, 200));
+        }
+        console.log("[sendMessage] emitting message_end with content length:", currentAssistantMsg?.content?.length);
+        entry.emitter.emit("sse", "message_end", {
+          content: currentAssistantMsg?.content,
+        });
         currentAssistantMsg = null;
         break;
       }
@@ -627,6 +638,7 @@ export async function closeSession(
     agents.delete(id);
   }
 
+  cleanupPreviewTokens(id);
   await fs.rm(sessionDir, { recursive: true, force: true });
   return { deleted: true };
 }

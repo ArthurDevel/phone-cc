@@ -1,71 +1,97 @@
 /**
- * Standalone WebSocket proxy server for Deepgram speech-to-text.
+ * Standalone WebSocket proxy server for Deepgram Flux speech-to-text.
  *
- * Responsibilities:
- * - Runs on port 3001 alongside the Next.js dev server
+ * - Finds a free port automatically (starting from DEEPGRAM_WS_PORT or 3001)
+ * - Writes the chosen port to .deepgram-ws-port so the Next.js app can discover it
  * - Accepts WebSocket connections from the client at /deepgram
- * - Opens a WebSocket to Deepgram's live transcription API
- * - Relays audio chunks (client -> Deepgram) and transcription events (Deepgram -> client)
+ * - Opens a WebSocket to Deepgram's v2 Flux API (turn-based transcription)
+ * - Relays audio chunks (client -> Deepgram) and TurnInfo events (Deepgram -> client)
  * - Keeps DEEPGRAM_API_KEY server-side
  *
  * Start with: tsx src/server/deepgram-ws.ts
  */
 
-import { createServer } from "http";
+import { createServer, type Server } from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { config } from "dotenv";
 import path from "path";
+import fs from "fs";
 
 // Load .env.local from project root
 config({ path: path.resolve(process.cwd(), ".env.local") });
 
-// ============================================================================
-// CONSTANTS
-// ============================================================================
-
-const PORT = Number(process.env.DEEPGRAM_WS_PORT) || 3001;
+const START_PORT = Number(process.env.DEEPGRAM_WS_PORT) || 3001;
+const PORT_FILE = path.resolve(process.cwd(), ".deepgram-ws-port");
 const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY;
+// Flux v2 endpoint. Client sends raw linear16 PCM at 16kHz via AudioWorklet.
 const DEEPGRAM_URL =
-  "wss://api.deepgram.com/v1/listen?" +
-  "model=nova-2&language=en&endpointing=1500&interim_results=true&punctuate=true";
-
-// ============================================================================
-// MAIN ENTRYPOINT
-// ============================================================================
+  "wss://api.deepgram.com/v2/listen?model=flux-general-en&encoding=linear16&sample_rate=16000";
 
 if (!DEEPGRAM_API_KEY) {
   console.error("[deepgram-ws] DEEPGRAM_API_KEY not set in .env.local");
   process.exit(1);
 }
 
-const httpServer = createServer((_req, res) => {
-  // Health check endpoint
-  res.writeHead(200, { "Content-Type": "application/json" });
-  res.end(JSON.stringify({ ok: true }));
-});
+/** Try to listen on `port`. Resolves with the server if successful, rejects on EADDRINUSE. */
+function tryListen(server: Server, port: number): Promise<number> {
+  return new Promise((resolve, reject) => {
+    server.once("error", (err: NodeJS.ErrnoException) => {
+      if (err.code === "EADDRINUSE") reject(err);
+      else throw err;
+    });
+    server.listen(port, "127.0.0.1", () => resolve(port));
+  });
+}
 
-const wss = new WebSocketServer({ server: httpServer, path: "/deepgram" });
+async function main() {
+  const httpServer = createServer((_req, res) => {
+    // Health check + port discovery
+    res.writeHead(200, {
+      "Content-Type": "application/json",
+      "Access-Control-Allow-Origin": "*",
+    });
+    res.end(JSON.stringify({ ok: true }));
+  });
 
-wss.on("connection", (clientWs) => {
-  console.log("[deepgram-ws] Client connected");
-  handleClientConnection(clientWs);
-});
+  // Find a free port BEFORE attaching the WebSocketServer
+  let port = START_PORT;
+  for (let attempt = 0; attempt < 10; attempt++) {
+    try {
+      await tryListen(httpServer, port);
+      break;
+    } catch {
+      console.log(`[deepgram-ws] Port ${port} in use, trying ${port + 1}`);
+      port++;
+    }
+  }
 
-httpServer.listen(PORT, "127.0.0.1", () => {
-  console.log(`[deepgram-ws] WebSocket server listening on 127.0.0.1:${PORT}`);
-});
+  // Attach WSS only after httpServer is listening
+  const wss = new WebSocketServer({ server: httpServer, path: "/deepgram" });
+
+  wss.on("connection", (clientWs) => {
+    console.log("[deepgram-ws] Client connected");
+    handleClientConnection(clientWs);
+  });
+
+  // Write the port so the Next.js API route can read it
+  fs.writeFileSync(PORT_FILE, String(port));
+  console.log(`[deepgram-ws] WebSocket server listening on 127.0.0.1:${port}`);
+
+  // Clean up port file on exit
+  for (const sig of ["SIGINT", "SIGTERM", "exit"] as const) {
+    process.on(sig, () => {
+      try { fs.unlinkSync(PORT_FILE); } catch {}
+    });
+  }
+}
+
+main();
 
 // ============================================================================
 // HELPER FUNCTIONS
 // ============================================================================
 
-/**
- * Handles a single client WebSocket connection.
- * Opens a Deepgram WebSocket and relays data between client and Deepgram.
- * @param clientWs - The client's WebSocket connection
- */
 function handleClientConnection(clientWs: WebSocket) {
-  // Open connection to Deepgram
   const dgWs = new WebSocket(DEEPGRAM_URL, {
     headers: { Authorization: `Token ${DEEPGRAM_API_KEY}` },
   });
@@ -77,27 +103,24 @@ function handleClientConnection(clientWs: WebSocket) {
     console.log("[deepgram-ws] Connected to Deepgram");
   });
 
-  // Relay Deepgram transcription events to the client
   dgWs.on("message", (data) => {
+    const raw = data.toString();
+    const response = JSON.parse(raw);
+    console.log("[deepgram-ws] DG message:", response.type, response.event || "", response.code || "");
+
     if (clientWs.readyState !== WebSocket.OPEN) return;
 
-    try {
-      const response = JSON.parse(data.toString());
-
-      // Extract transcript from Deepgram response
-      const alternative = response.channel?.alternatives?.[0];
-      if (!alternative) return;
-
-      const message = JSON.stringify({
+    if (response.type === "TurnInfo") {
+      const isFinal = response.event === "EndOfTurn";
+      clientWs.send(JSON.stringify({
         type: "transcript",
-        text: alternative.transcript || "",
-        is_final: response.is_final || false,
-        speech_final: response.speech_final || false,
-      });
-
-      clientWs.send(message);
-    } catch {
-      // Ignore malformed Deepgram messages
+        text: response.transcript || "",
+        is_final: isFinal,
+        speech_final: isFinal,
+      }));
+    } else if (response.type === "Error") {
+      console.error("[deepgram-ws] Deepgram error:", response.description, response.code);
+      sendError(clientWs, response.description || "Deepgram error");
     }
   });
 
@@ -109,41 +132,26 @@ function handleClientConnection(clientWs: WebSocket) {
 
   dgWs.on("close", () => {
     console.log("[deepgram-ws] Deepgram connection closed");
-    if (clientWs.readyState === WebSocket.OPEN) {
-      clientWs.close();
-    }
+    if (clientWs.readyState === WebSocket.OPEN) clientWs.close();
   });
 
-  // Relay client audio chunks to Deepgram
   clientWs.on("message", (data) => {
-    if (dgReady && dgWs.readyState === WebSocket.OPEN) {
-      dgWs.send(data);
-    }
+    if (dgReady && dgWs.readyState === WebSocket.OPEN) dgWs.send(data);
   });
 
-  // Clean up when client disconnects
   clientWs.on("close", () => {
     console.log("[deepgram-ws] Client disconnected");
     if (dgWs.readyState === WebSocket.OPEN) {
-      // Send close signal to Deepgram
-      dgWs.send(JSON.stringify({ type: "CloseStream" }));
       dgWs.close();
     }
   });
 
   clientWs.on("error", (err) => {
     console.error("[deepgram-ws] Client error:", err.message);
-    if (dgWs.readyState === WebSocket.OPEN) {
-      dgWs.close();
-    }
+    if (dgWs.readyState === WebSocket.OPEN) dgWs.close();
   });
 }
 
-/**
- * Sends an error message to the client WebSocket.
- * @param ws - The client WebSocket
- * @param message - Error description
- */
 function sendError(ws: WebSocket, message: string) {
   if (ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: "error", message }));
