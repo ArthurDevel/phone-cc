@@ -13,6 +13,10 @@ import { NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
 
+// Ensure this route is never statically cached -- every request must reach the
+// updater service so we get a fresh git-fetch comparison.
+export const dynamic = "force-dynamic";
+
 // ============================================================================
 // CONSTANTS
 // ============================================================================
