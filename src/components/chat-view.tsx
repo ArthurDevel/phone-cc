@@ -421,6 +421,40 @@ function useVoiceInput(
       console.log("[voice] mic access granted");
       mediaStreamRef.current = stream;
 
+      // Create AudioContext immediately in the user gesture callstack
+      // (mobile browsers suspend it if created in an async callback)
+      const audioCtx = new AudioContext({ sampleRate: 16000 });
+      audioCtxRef.current = audioCtx;
+      // Ensure it's running — mobile Safari may start it as "suspended"
+      if (audioCtx.state === "suspended") {
+        await audioCtx.resume();
+      }
+      console.log("[voice] AudioContext created, state:", audioCtx.state);
+
+      // Pre-register the PCM worklet processor
+      const processorCode = `
+        class PcmProcessor extends AudioWorkletProcessor {
+          process(inputs) {
+            const input = inputs[0];
+            if (input.length > 0) {
+              const float32 = input[0];
+              const int16 = new Int16Array(float32.length);
+              for (let i = 0; i < float32.length; i++) {
+                const s = Math.max(-1, Math.min(1, float32[i]));
+                int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+              }
+              this.port.postMessage(int16.buffer, [int16.buffer]);
+            }
+            return true;
+          }
+        }
+        registerProcessor("pcm-processor", PcmProcessor);
+      `;
+      const blob = new Blob([processorCode], { type: "application/javascript" });
+      const blobUrl = URL.createObjectURL(blob);
+      await audioCtx.audioWorklet.addModule(blobUrl);
+      URL.revokeObjectURL(blobUrl);
+
       const wsUrl = await getDeepgramWsUrl();
       console.log("[voice] opening WS to", wsUrl);
       const ws = new WebSocket(wsUrl);
@@ -428,38 +462,8 @@ function useVoiceInput(
       setInterimText("");
       setRecording(true);
 
-      ws.onopen = async () => {
+      ws.onopen = () => {
         console.log("[voice] WS opened");
-
-        // Use AudioContext + AudioWorklet to capture raw linear16 PCM at 16kHz
-        const audioCtx = new AudioContext({ sampleRate: 16000 });
-        audioCtxRef.current = audioCtx;
-
-        // Register the PCM worklet processor inline via a Blob URL
-        const processorCode = `
-          class PcmProcessor extends AudioWorkletProcessor {
-            process(inputs) {
-              const input = inputs[0];
-              if (input.length > 0) {
-                const float32 = input[0];
-                // Convert float32 [-1,1] to int16 linear16
-                const int16 = new Int16Array(float32.length);
-                for (let i = 0; i < float32.length; i++) {
-                  const s = Math.max(-1, Math.min(1, float32[i]));
-                  int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-                }
-                this.port.postMessage(int16.buffer, [int16.buffer]);
-              }
-              return true;
-            }
-          }
-          registerProcessor("pcm-processor", PcmProcessor);
-        `;
-        const blob = new Blob([processorCode], { type: "application/javascript" });
-        const blobUrl = URL.createObjectURL(blob);
-
-        await audioCtx.audioWorklet.addModule(blobUrl);
-        URL.revokeObjectURL(blobUrl);
 
         const source = audioCtx.createMediaStreamSource(stream);
         const worklet = new AudioWorkletNode(audioCtx, "pcm-processor");
@@ -529,12 +533,14 @@ function useVoiceInput(
     }
   }, [sessionId, status, onTranscript, stopRecording, teardown]);
 
-  const handlePointerDown = useCallback(() => {
+  const handlePointerDown = useCallback((e: React.PointerEvent) => {
+    e.preventDefault(); // Prevent long-press context menu & text selection on mobile
     if (navigator.vibrate) navigator.vibrate(50);
     startRecording();
   }, [startRecording]);
 
-  const handlePointerUp = useCallback(() => {
+  const handlePointerUp = useCallback((e: React.PointerEvent) => {
+    e.preventDefault();
     stopRecording();
   }, [stopRecording]);
 
@@ -1052,6 +1058,8 @@ export function ChatView() {
               onPointerDown={voiceProcessing ? undefined : handlePointerDown}
               onPointerUp={recording ? handlePointerUp : undefined}
               onPointerLeave={recording ? handlePointerUp : undefined}
+              onContextMenu={(e) => e.preventDefault()}
+              style={{ touchAction: "none", WebkitUserSelect: "none", userSelect: "none" }}
               className={`w-14 h-14 rounded-full flex items-center justify-center shrink-0 transition-transform transition-colors relative active:scale-95 ${
                 recording
                   ? "bg-danger"
