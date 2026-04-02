@@ -16,7 +16,13 @@ import { getTextContent, getToolUses } from "@/types/message";
 const execFileAsync = promisify(execFile);
 
 const SESSIONS_DIR = path.join(os.homedir(), ".phonecc", "sessions");
+const SESSION_METADATA_DIR = path.join(os.homedir(), ".phonecc", "session-metadata");
 const MAX_SESSIONS = 5;
+
+/** Returns the metadata directory for a given session (outside the git clone). */
+function sessionMetadataPath(sessionId: string): string {
+  return path.join(SESSION_METADATA_DIR, sessionId);
+}
 
 interface AgentEntry {
   sdkSessionId: string;
@@ -185,19 +191,30 @@ async function loadMessagesFromSdk(cwd: string, sdkSessionId: string): Promise<M
 
 async function ensureSessionsDir() {
   await fs.mkdir(SESSIONS_DIR, { recursive: true });
+  await fs.mkdir(SESSION_METADATA_DIR, { recursive: true });
 }
 
 async function readSessionMetadata(
-  sessionDir: string
+  sessionId: string
 ): Promise<SessionMetadata | null> {
+  const metaDir = sessionMetadataPath(sessionId);
   try {
     const data = await fs.readFile(
-      path.join(sessionDir, "session.json"),
+      path.join(metaDir, "session.json"),
       "utf-8"
     );
     return JSON.parse(data) as SessionMetadata;
   } catch {
-    return null;
+    // Fall back to legacy location (inside the git clone) for existing sessions
+    try {
+      const data = await fs.readFile(
+        path.join(SESSIONS_DIR, sessionId, "session.json"),
+        "utf-8"
+      );
+      return JSON.parse(data) as SessionMetadata;
+    } catch {
+      return null;
+    }
   }
 }
 
@@ -264,16 +281,24 @@ function buildCloneUrl(repoUrl: string): string {
   return url.replace("https://", `https://${pat}@`);
 }
 
-async function readSdkSessionId(sessionDir: string): Promise<string | undefined> {
+async function readSdkSessionId(sessionId: string): Promise<string | undefined> {
+  const metaDir = sessionMetadataPath(sessionId);
   try {
-    return (await fs.readFile(path.join(sessionDir, ".sdk-session-id"), "utf-8")).trim();
+    return (await fs.readFile(path.join(metaDir, ".sdk-session-id"), "utf-8")).trim();
   } catch {
-    return undefined;
+    // Fall back to legacy location (inside the git clone) for existing sessions
+    try {
+      return (await fs.readFile(path.join(SESSIONS_DIR, sessionId, ".sdk-session-id"), "utf-8")).trim();
+    } catch {
+      return undefined;
+    }
   }
 }
 
-async function writeSdkSessionId(sessionDir: string, id: string) {
-  await fs.writeFile(path.join(sessionDir, ".sdk-session-id"), id, "utf-8");
+async function writeSdkSessionId(sessionId: string, id: string) {
+  const metaDir = sessionMetadataPath(sessionId);
+  await fs.mkdir(metaDir, { recursive: true });
+  await fs.writeFile(path.join(metaDir, ".sdk-session-id"), id, "utf-8");
 }
 
 function ensureAgent(sessionId: string, cwd: string, sdkSessionId?: string, existingMessages?: Message[]): AgentEntry {
@@ -342,7 +367,7 @@ export async function sendMessage(sessionId: string, text: string): Promise<void
       console.log("[sendMessage] got message type:", message.type, "subtype" in message ? message.subtype : "");
       if (message.type === "system" && message.subtype === "init") {
         entry.sdkSessionId = message.session_id;
-        await writeSdkSessionId(entry.cwd, message.session_id);
+        await writeSdkSessionId(sessionId, message.session_id);
         continue;
       }
 
@@ -580,8 +605,10 @@ export async function createSession(projectId: string): Promise<Session> {
     createdAt: new Date().toISOString(),
   };
 
+  const metaDir = sessionMetadataPath(branchName);
+  await fs.mkdir(metaDir, { recursive: true });
   await fs.writeFile(
-    path.join(sessionDir, "session.json"),
+    path.join(metaDir, "session.json"),
     JSON.stringify(metadata, null, 2),
     "utf-8"
   );
@@ -597,8 +624,7 @@ export async function listSessions(): Promise<Session[]> {
   const sessions: Session[] = [];
 
   for (const name of names) {
-    const sessionDir = path.join(SESSIONS_DIR, name);
-    const metadata = await readSessionMetadata(sessionDir);
+    const metadata = await readSessionMetadata(name);
     if (!metadata) continue;
 
     sessions.push({
@@ -632,7 +658,7 @@ export async function closeSession(
 
   if (!confirmed) {
     try {
-      const metadata = await readSessionMetadata(sessionDir);
+      const metadata = await readSessionMetadata(id);
       const branchName = metadata?.branchName || id;
       const { stdout } = await execFileAsync(
         "git",
@@ -663,6 +689,7 @@ export async function closeSession(
 
   cleanupPreviewTokens(id);
   await fs.rm(sessionDir, { recursive: true, force: true });
+  await fs.rm(sessionMetadataPath(id), { recursive: true, force: true });
   return { deleted: true };
 }
 
@@ -676,7 +703,7 @@ export async function reconnectSession(id: string): Promise<Session | null> {
     return null;
   }
 
-  const metadata = await readSessionMetadata(sessionDir);
+  const metadata = await readSessionMetadata(id);
   console.log("[reconnectSession] metadata:", metadata);
   if (!metadata) return null;
 
@@ -685,7 +712,7 @@ export async function reconnectSession(id: string): Promise<Session | null> {
     return { ...metadata, status: "active" };
   }
 
-  const sdkSessionId = await readSdkSessionId(sessionDir);
+  const sdkSessionId = await readSdkSessionId(id);
   console.log("[reconnectSession] sdkSessionId:", sdkSessionId);
   const messages = await loadMessagesFromSdk(sessionDir, sdkSessionId || "");
   console.log("[reconnectSession] loaded", messages.length, "messages from SDK");
