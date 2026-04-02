@@ -7,7 +7,7 @@
  * - Keeps connection open until client disconnects
  */
 
-import { getEventEmitter, reconnectSession } from "@/lib/session-manager";
+import { getEventEmitter, isProcessing, reconnectSession } from "@/lib/session-manager";
 
 // ============================================================================
 // ENDPOINT
@@ -56,6 +56,12 @@ export async function GET(
       }
 
       emitter.on("sse", onSse);
+
+      // Send the current processing status so the client knows if
+      // the session is already running (scopes the stop button per session).
+      sendEvent("status_change", {
+        status: isProcessing(id) ? "thinking" : "idle",
+      });
 
       // Send a heartbeat comment every 30s to keep the connection alive
       const heartbeat = setInterval(() => {
