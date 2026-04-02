@@ -22,7 +22,7 @@ import type { PullRequest } from "@/types/pr";
 // ============================================================================
 
 const PR_POLL_INTERVAL = 60_000;
-const PUSH_PROMPT = "Push all committed changes to the remote repository on the current branch. Use git push.";
+const PUSH_PROMPT = "First, check for any uncommitted local changes (staged or unstaged). If there are any, stage them and commit with a descriptive message. Then push all committed changes to the remote repository on the current branch. Use git add, git commit, and git push as needed.";
 const PR_PROMPT = "Create a pull request from the current branch to main. Use gh pr create with a descriptive title and body based on the changes made.";
 
 // ============================================================================
