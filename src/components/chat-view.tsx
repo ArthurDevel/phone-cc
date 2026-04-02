@@ -16,7 +16,8 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { useSession, type RuntimeStatus } from "@/contexts/session-context";
 import { renderMarkdown } from "@/lib/markdown";
 import { PrCard } from "@/components/pr-card";
-import type { Message, ToolUse } from "@/types/message";
+import type { Message, ToolUse, ContentBlock } from "@/types/message";
+import { getTextContent, getToolUses } from "@/types/message";
 import type { PullRequest } from "@/types/pr";
 import { uuid } from "@/lib/uuid";
 
@@ -98,8 +99,13 @@ function useChatStream(
       .then((data) => {
         if (!cancelled) {
           const msgs = (data.messages || []).map((m: Message) =>
-            m.role === "assistant" && m.content
-              ? { ...m, content: resolvePreviewUrls(m.content) }
+            m.role === "assistant"
+              ? {
+                  ...m,
+                  contentBlocks: m.contentBlocks.map((b) =>
+                    b.type === "text" ? { ...b, text: resolvePreviewUrls(b.text) } : b
+                  ),
+                }
               : m
           );
           setMessages(msgs);
@@ -136,8 +142,13 @@ function useChatStream(
           .then((data) => {
             if (!cancelled && data?.messages) {
               const msgs = data.messages.map((m: Message) =>
-                m.role === "assistant" && m.content
-                  ? { ...m, content: resolvePreviewUrls(m.content) }
+                m.role === "assistant"
+                  ? {
+                      ...m,
+                      contentBlocks: m.contentBlocks.map((b: ContentBlock) =>
+                        b.type === "text" ? { ...b, text: resolvePreviewUrls(b.text) } : b
+                      ),
+                    }
                   : m
               );
               setMessages(msgs);
@@ -164,16 +175,19 @@ function useChatStream(
           const updated = [...prev];
           const last = updated[updated.length - 1];
           if (last && last.role === "assistant") {
-            updated[updated.length - 1] = {
-              ...last,
-              content: last.content + data.text,
-            };
+            const blocks = [...last.contentBlocks];
+            const lastBlock = blocks[blocks.length - 1];
+            if (lastBlock && lastBlock.type === "text") {
+              blocks[blocks.length - 1] = { ...lastBlock, text: lastBlock.text + data.text };
+            } else {
+              blocks.push({ type: "text", text: data.text });
+            }
+            updated[updated.length - 1] = { ...last, contentBlocks: blocks };
           } else {
             updated.push({
               id: uuid(),
               role: "assistant",
-              content: data.text,
-              toolUses: [],
+              contentBlocks: [{ type: "text", text: data.text }],
               timestamp: Date.now(),
             });
           }
@@ -191,22 +205,24 @@ function useChatStream(
             last = {
               id: uuid(),
               role: "assistant",
-              content: "",
-              toolUses: [],
+              contentBlocks: [],
               timestamp: Date.now(),
             };
             updated.push(last);
           }
           updated[updated.length - 1] = {
             ...last,
-            toolUses: [
-              ...last.toolUses,
+            contentBlocks: [
+              ...last.contentBlocks,
               {
-                id: data.id,
-                toolName: data.toolName,
-                input: data.toolInput || {},
-                output: "",
-                status: "running",
+                type: "tool_use" as const,
+                toolUse: {
+                  id: data.id,
+                  toolName: data.toolName,
+                  input: data.toolInput || {},
+                  output: "",
+                  status: "running" as const,
+                },
               },
             ],
           };
@@ -223,10 +239,10 @@ function useChatStream(
           if (last && last.role === "assistant") {
             updated[updated.length - 1] = {
               ...last,
-              toolUses: last.toolUses.map((t) =>
-                t.id === data.id
-                  ? { ...t, output: data.output, status: data.status }
-                  : t
+              contentBlocks: last.contentBlocks.map((block) =>
+                block.type === "tool_use" && block.toolUse.id === data.id
+                  ? { ...block, toolUse: { ...block.toolUse, output: data.output, status: data.status } }
+                  : block
               ),
             };
           }
@@ -239,14 +255,16 @@ function useChatStream(
         // Replace streamed content with the final rewritten version (preview URLs)
         const data = JSON.parse(e.data);
         console.log("[message_end] received data:", JSON.stringify(data).slice(0, 300));
-        console.log("[message_end] data.content is null?", data.content == null, "type:", typeof data.content);
-        if (data.content != null) {
-          const resolved = resolvePreviewUrls(data.content);
+        if (data.contentBlocks != null) {
+          // Use the authoritative contentBlocks from the server, with preview URLs resolved
+          const resolvedBlocks = (data.contentBlocks as ContentBlock[]).map((b) =>
+            b.type === "text" ? { ...b, text: resolvePreviewUrls(b.text) } : b
+          );
           setMessages((prev) => {
             const updated = [...prev];
             const last = updated[updated.length - 1];
             if (last && last.role === "assistant") {
-              updated[updated.length - 1] = { ...last, content: resolved };
+              updated[updated.length - 1] = { ...last, contentBlocks: resolvedBlocks };
             }
             return updated;
           });
@@ -309,7 +327,7 @@ function useChatStream(
       const msg = messages.find((m) => m.id === messageId);
       if (msg && msg.role === "user") {
         setFailedMessageId(null);
-        sendMessage(msg.content);
+        sendMessage(getTextContent(msg));
       }
     },
     [messages, sendMessage]
@@ -573,7 +591,7 @@ function UserBubble({
   return (
     <div className="flex flex-col items-end animate-message-in">
       <div className="bg-accent text-white rounded-2xl rounded-br-sm max-w-[80%] px-4 py-2 text-sm">
-        {message.content}
+        {getTextContent(message)}
       </div>
       {failed && (
         <div className="flex items-center gap-2 mt-1 text-xs">
@@ -603,25 +621,28 @@ function AssistantBubble({
   onToolClick: (toolUse: ToolUse) => void;
   sessionId: string | null;
 }) {
-  const hasPrUrl = PR_URL_PATTERN.test(message.content);
+  const textContent = getTextContent(message);
+  const hasPrUrl = PR_URL_PATTERN.test(textContent);
   const pr = usePrDetection(sessionId, hasPrUrl);
 
   return (
     <div className="flex justify-start animate-message-in">
       <div className="bg-surface text-foreground rounded-2xl rounded-bl-sm max-w-[80%] px-4 py-2 text-sm">
-        {message.content && (
-          <div
-            className="whitespace-pre-wrap break-words"
-            dangerouslySetInnerHTML={{ __html: renderMarkdown(message.content) }}
-          />
+        {message.contentBlocks.map((block, i) =>
+          block.type === "text" && block.text ? (
+            <div
+              key={`text-${i}`}
+              className="whitespace-pre-wrap break-words"
+              dangerouslySetInnerHTML={{ __html: renderMarkdown(block.text) }}
+            />
+          ) : block.type === "tool_use" ? (
+            <ToolUseRow
+              key={block.toolUse.id}
+              toolUse={block.toolUse}
+              onClick={() => onToolClick(block.toolUse)}
+            />
+          ) : null
         )}
-        {message.toolUses.map((toolUse) => (
-          <ToolUseRow
-            key={toolUse.id}
-            toolUse={toolUse}
-            onClick={() => onToolClick(toolUse)}
-          />
-        ))}
         {pr && <PrCard pr={pr} />}
       </div>
     </div>
