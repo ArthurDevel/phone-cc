@@ -42,8 +42,15 @@ export async function GET(
 
   // Rewrite localhost URLs to preview URLs in assistant messages
   const rewrittenMessages = messages.map((msg) => {
-    if (msg.role === "assistant" && msg.content) {
-      return { ...msg, content: rewriteAgentOutput(id, msg.content) };
+    if (msg.role === "assistant") {
+      return {
+        ...msg,
+        contentBlocks: msg.contentBlocks.map((block) =>
+          block.type === "text"
+            ? { ...block, text: rewriteAgentOutput(id, block.text) }
+            : block
+        ),
+      };
     }
     return msg;
   });

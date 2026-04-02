@@ -137,6 +137,10 @@ describe("sendMessage rewrites localhost URLs in message_end", () => {
     expect(messageEnd!.data.content).toContain(
       "The dev server is running at"
     );
+    // Also verify contentBlocks are sent
+    expect(messageEnd!.data.contentBlocks).toBeDefined();
+    expect(messageEnd!.data.contentBlocks[0].type).toBe("text");
+    expect(messageEnd!.data.contentBlocks[0].text).not.toContain("localhost");
   });
 
   it("does NOT rewrite text without localhost URLs", async () => {
@@ -155,5 +159,7 @@ describe("sendMessage rewrites localhost URLs in message_end", () => {
     const messageEnd = events.find((e) => e.type === "message_end");
     expect(messageEnd).toBeDefined();
     expect(messageEnd!.data.content).toBe("All done, no servers running.");
+    expect(messageEnd!.data.contentBlocks).toBeDefined();
+    expect(messageEnd!.data.contentBlocks[0]).toEqual({ type: "text", text: "All done, no servers running." });
   });
 });

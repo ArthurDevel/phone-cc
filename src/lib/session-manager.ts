@@ -10,7 +10,8 @@ import { readSettings } from "@/lib/settings";
 import { CITIES } from "@/lib/cities";
 import { rewriteAgentOutput, cleanupSession as cleanupPreviewTokens } from "@/lib/preview-manager";
 import type { Session, SessionMetadata } from "@/types/session";
-import type { Message, ToolUse } from "@/types/message";
+import type { Message, ToolUse, ContentBlock } from "@/types/message";
+import { getTextContent, getToolUses } from "@/types/message";
 
 const execFileAsync = promisify(execFile);
 
@@ -88,8 +89,7 @@ async function loadMessagesFromSdk(cwd: string, sdkSessionId: string): Promise<M
         messages.push({
           id: (entry.uuid as string) || crypto.randomUUID(),
           role: "user",
-          content,
-          toolUses: [],
+          contentBlocks: [{ type: "text", text: content }],
           timestamp: new Date((entry.timestamp as string) || Date.now()).getTime(),
         });
         currentAssistant = null;
@@ -106,8 +106,7 @@ async function loadMessagesFromSdk(cwd: string, sdkSessionId: string): Promise<M
           messages.push({
             id: (entry.uuid as string) || crypto.randomUUID(),
             role: "user",
-            content: textBlocks.map((b) => b.text).join(""),
-            toolUses: [],
+            contentBlocks: [{ type: "text", text: textBlocks.map((b) => b.text).join("") }],
             timestamp: new Date((entry.timestamp as string) || Date.now()).getTime(),
           });
           currentAssistant = null;
@@ -116,7 +115,7 @@ async function loadMessagesFromSdk(cwd: string, sdkSessionId: string): Promise<M
         // Attach tool results to the current assistant message
         if (toolResults.length > 0 && currentAssistant) {
           for (const tr of toolResults) {
-            const toolUse = currentAssistant.toolUses.find(
+            const toolUse = getToolUses(currentAssistant).find(
               (t) => t.id === tr.tool_use_id
             );
             if (toolUse) {
@@ -147,8 +146,7 @@ async function loadMessagesFromSdk(cwd: string, sdkSessionId: string): Promise<M
         currentAssistant = {
           id: (entry.uuid as string) || crypto.randomUUID(),
           role: "assistant",
-          content: "",
-          toolUses: [],
+          contentBlocks: [],
           timestamp: new Date((entry.timestamp as string) || Date.now()).getTime(),
         };
         messages.push(currentAssistant);
@@ -156,16 +154,19 @@ async function loadMessagesFromSdk(cwd: string, sdkSessionId: string): Promise<M
 
       for (const block of msg.content) {
         if (block.type === "text" && block.text) {
-          currentAssistant.content += block.text;
+          currentAssistant.contentBlocks.push({ type: "text", text: block.text });
         } else if (block.type === "tool_use" && block.id && block.name) {
           // Only add if not already present (SDK emits multiple assistant entries for same turn)
-          if (!currentAssistant.toolUses.find((t) => t.id === block.id)) {
-            currentAssistant.toolUses.push({
-              id: block.id,
-              toolName: block.name,
-              input: (block.input as Record<string, unknown>) || {},
-              output: "",
-              status: "running",
+          if (!getToolUses(currentAssistant).find((t) => t.id === block.id)) {
+            currentAssistant.contentBlocks.push({
+              type: "tool_use",
+              toolUse: {
+                id: block.id,
+                toolName: block.name,
+                input: (block.input as Record<string, unknown>) || {},
+                output: "",
+                status: "running",
+              },
             });
           }
         }
@@ -178,7 +179,7 @@ async function loadMessagesFromSdk(cwd: string, sdkSessionId: string): Promise<M
     }
   }
 
-  console.log("[loadMessagesFromSdk] parsed", messages.length, "messages:", messages.map(m => ({ role: m.role, contentLen: m.content.length, tools: m.toolUses.length })));
+  console.log("[loadMessagesFromSdk] parsed", messages.length, "messages:", messages.map(m => ({ role: m.role, blocks: m.contentBlocks.length })));
   return messages;
 }
 
@@ -303,8 +304,7 @@ export async function sendMessage(sessionId: string, text: string): Promise<void
   const userMsg: Message = {
     id: crypto.randomUUID(),
     role: "user",
-    content: text,
-    toolUses: [],
+    contentBlocks: [{ type: "text", text }],
     timestamp: Date.now(),
   };
   entry.messages.push(userMsg);
@@ -354,14 +354,16 @@ export async function sendMessage(sessionId: string, text: string): Promise<void
             currentAssistantMsg = {
               id: crypto.randomUUID(),
               role: "assistant",
-              content: "",
-              toolUses: [],
+              contentBlocks: [],
               timestamp: Date.now(),
             };
             entry.messages.push(currentAssistantMsg);
           }
 
-          if (event.content_block.type === "tool_use") {
+          if (event.content_block.type === "text") {
+            // Push a new text block to preserve interleaving order
+            currentAssistantMsg.contentBlocks.push({ type: "text", text: "" });
+          } else if (event.content_block.type === "tool_use") {
             const toolUse: ToolUse = {
               id: event.content_block.id,
               toolName: event.content_block.name,
@@ -369,7 +371,7 @@ export async function sendMessage(sessionId: string, text: string): Promise<void
               output: "",
               status: "running",
             };
-            currentAssistantMsg.toolUses.push(toolUse);
+            currentAssistantMsg.contentBlocks.push({ type: "tool_use", toolUse });
             entry.emitter.emit("sse", "tool_use_start", {
               id: toolUse.id,
               toolName: toolUse.toolName,
@@ -380,7 +382,15 @@ export async function sendMessage(sessionId: string, text: string): Promise<void
 
         if (event.type === "content_block_delta") {
           if (event.delta.type === "text_delta" && currentAssistantMsg) {
-            currentAssistantMsg.content += event.delta.text;
+            // Append to the last text block (created by content_block_start)
+            const blocks = currentAssistantMsg.contentBlocks;
+            const lastBlock = blocks[blocks.length - 1];
+            if (lastBlock && lastBlock.type === "text") {
+              lastBlock.text += event.delta.text;
+            } else {
+              // Fallback: create a new text block if none exists
+              blocks.push({ type: "text", text: event.delta.text });
+            }
             entry.emitter.emit("sse", "text_delta", { text: event.delta.text });
           }
           if (event.delta.type === "input_json_delta" && currentAssistantMsg) {
@@ -396,7 +406,7 @@ export async function sendMessage(sessionId: string, text: string): Promise<void
         const content = message.message.content;
         for (const block of content) {
           if (block.type === "tool_use") {
-            const toolUse = currentAssistantMsg.toolUses.find(
+            const toolUse = getToolUses(currentAssistantMsg).find(
               (t) => t.id === block.id
             );
             if (toolUse) {
@@ -423,7 +433,7 @@ export async function sendMessage(sessionId: string, text: string): Promise<void
                 content?: string | Array<{ type: string; text?: string }>;
                 is_error?: boolean;
               };
-              const toolUse = currentAssistantMsg.toolUses.find(
+              const toolUse = getToolUses(currentAssistantMsg).find(
                 (t) => t.id === resultBlock.tool_use_id
               );
               if (toolUse) {
@@ -453,13 +463,18 @@ export async function sendMessage(sessionId: string, text: string): Promise<void
         // Rewrite localhost URLs to preview URLs in the completed message
         console.log("[sendMessage] message_end: currentAssistantMsg exists?", !!currentAssistantMsg);
         if (currentAssistantMsg) {
-          console.log("[sendMessage] before rewrite, content snippet:", currentAssistantMsg.content.slice(0, 200));
-          currentAssistantMsg.content = rewriteAgentOutput(sessionId, currentAssistantMsg.content);
-          console.log("[sendMessage] after rewrite, content snippet:", currentAssistantMsg.content.slice(0, 200));
+          // Rewrite localhost URLs to preview URLs in all text blocks
+          for (const block of currentAssistantMsg.contentBlocks) {
+            if (block.type === "text") {
+              block.text = rewriteAgentOutput(sessionId, block.text);
+            }
+          }
         }
-        console.log("[sendMessage] emitting message_end with content length:", currentAssistantMsg?.content?.length);
+        const finalContent = currentAssistantMsg ? getTextContent(currentAssistantMsg) : undefined;
+        console.log("[sendMessage] emitting message_end with content length:", finalContent?.length);
         entry.emitter.emit("sse", "message_end", {
-          content: currentAssistantMsg?.content,
+          content: finalContent,
+          contentBlocks: currentAssistantMsg?.contentBlocks,
         });
         currentAssistantMsg = null;
         break;
@@ -474,7 +489,8 @@ export async function sendMessage(sessionId: string, text: string): Promise<void
     if (abortController.signal.aborted) {
       // User-initiated cancel -- tell the frontend to go back to idle
       entry.emitter.emit("sse", "message_end", {
-        content: currentAssistantMsg?.content,
+        content: currentAssistantMsg ? getTextContent(currentAssistantMsg) : undefined,
+        contentBlocks: currentAssistantMsg?.contentBlocks,
       });
       entry.emitter.emit("sse", "status_change", { status: "idle" });
     } else {
