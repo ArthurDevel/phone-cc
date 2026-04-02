@@ -18,7 +18,7 @@ import type { PullRequest } from "@/types/pr";
 // CONSTANTS
 // ============================================================================
 
-const SESSIONS_DIR = path.join(os.homedir(), ".phonecc", "sessions");
+const SESSION_METADATA_DIR = path.join(os.homedir(), ".phonecc", "session-metadata");
 
 // ============================================================================
 // ENDPOINT
@@ -29,12 +29,12 @@ export async function GET(
   ctx: RouteContext<"/api/sessions/[id]/pr">
 ) {
   const { id } = await ctx.params;
-  const sessionDir = path.join(SESSIONS_DIR, id);
+  const metaDir = path.join(SESSION_METADATA_DIR, id);
 
   // Read session metadata
   let metadata: { repoUrl: string; branchName: string };
   try {
-    const raw = await fs.readFile(path.join(sessionDir, "session.json"), "utf-8");
+    const raw = await fs.readFile(path.join(metaDir, "session.json"), "utf-8");
     metadata = JSON.parse(raw);
   } catch {
     return Response.json({ error: "Session not found" }, { status: 404 });
