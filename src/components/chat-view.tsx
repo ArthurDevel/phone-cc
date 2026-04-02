@@ -77,6 +77,10 @@ function useChatStream(
       setReconnecting(false);
       setLoadingHistory(false);
     } else {
+      // Reset status when switching between sessions so we don't carry
+      // the previous session's "thinking" state into the new one.
+      // The SSE stream will send the correct initial status on connect.
+      setStatus("idle");
       setLoadingHistory(true);
     }
   }
